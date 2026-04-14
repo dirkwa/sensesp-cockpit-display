@@ -1,0 +1,21 @@
+{
+  "name": "SensESP Cockpit Display",
+  "version": "0.1.0",
+  "description": "Native LVGL cockpit display for SensESP — marine instrument gauges, digital switch panel, and status indicators on ESP32-P4 MIPI-DSI touch displays",
+  "keywords": "display, lvgl, cockpit, marine, signalk, switches, gauges, esp32-p4, touch, mipi-dsi, sensesp",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dirkwa/sensesp-cockpit-display.git"
+  },
+  "license": "MIT",
+  "frameworks": ["arduino", "espidf"],
+  "platforms": ["espressif32"],
+  "dependencies": {
+    "SignalK/SensESP": ">=3.3.0",
+    "lvgl/lvgl": "^9.2"
+  },
+  "build": {
+    "srcFilter": ["+<*>"],
+    "includeDir": "src"
+  }
+}
