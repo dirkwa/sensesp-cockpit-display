@@ -7,3 +7,6 @@
 #include "sensesp_cockpit_display/ui/pages/switch_page.h"
 #include "sensesp_cockpit_display/ui/widgets/switch_widget.h"
 #include "sensesp_cockpit_display/data/sk_switch_binding.h"
+#include "sensesp_cockpit_display/data/sk_gauge_binding.h"
+#include "sensesp_cockpit_display/ui/pages/instrument_page.h"
+#include "sensesp_cockpit_display/ui/widgets/gauge_widget.h"

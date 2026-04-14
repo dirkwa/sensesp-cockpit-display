@@ -34,12 +34,9 @@ void CockpitUI::init() {
   lv_obj_t* sw_tab = lv_tabview_add_tab(tabview_, "Switches");
   switch_page_ = new SwitchPage(sw_tab);
 
-  // Placeholder tabs for future pages
+  // Instruments page
   lv_obj_t* instr_tab = lv_tabview_add_tab(tabview_, "Instruments");
-  lv_obj_t* instr_lbl = lv_label_create(instr_tab);
-  lv_label_set_text(instr_lbl, "Instruments — coming soon");
-  lv_obj_set_style_text_color(instr_lbl, theme::label(), 0);
-  lv_obj_center(instr_lbl);
+  instrument_page_ = new InstrumentPage(instr_tab);
 
   lv_obj_t* status_tab = lv_tabview_add_tab(tabview_, "Status");
   lv_obj_t* status_lbl = lv_label_create(status_tab);
