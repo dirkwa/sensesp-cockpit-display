@@ -39,10 +39,7 @@ void CockpitUI::init() {
   instrument_page_ = new InstrumentPage(instr_tab);
 
   lv_obj_t* status_tab = lv_tabview_add_tab(tabview_, "Status");
-  lv_obj_t* status_lbl = lv_label_create(status_tab);
-  lv_label_set_text(status_lbl, "System Status — coming soon");
-  lv_obj_set_style_text_color(status_lbl, theme::label(), 0);
-  lv_obj_center(status_lbl);
+  status_page_ = new StatusPage(status_tab);
 
   ESP_LOGI(TAG, "Cockpit UI initialized with %d tabs", 3);
 }

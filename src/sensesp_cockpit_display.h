@@ -9,4 +9,6 @@
 #include "sensesp_cockpit_display/data/sk_switch_binding.h"
 #include "sensesp_cockpit_display/data/sk_gauge_binding.h"
 #include "sensesp_cockpit_display/ui/pages/instrument_page.h"
+#include "sensesp_cockpit_display/ui/pages/status_page.h"
 #include "sensesp_cockpit_display/ui/widgets/gauge_widget.h"
+#include "sensesp_cockpit_display/ui/widgets/status_indicator.h"
