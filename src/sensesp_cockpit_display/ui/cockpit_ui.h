@@ -18,6 +18,10 @@ class CockpitUI {
   void tick() { lv_timer_handler(); }
 
   SwitchPage* get_switch_page() { return switch_page_; }
+
+  /// Add an additional switch page tab with a custom name.
+  /// Useful for grouping switches by location/function.
+  SwitchPage* add_switch_page(const char* tab_name);
   InstrumentPage* get_instrument_page() { return instrument_page_; }
   StatusPage* get_status_page() { return status_page_; }
 

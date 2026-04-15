@@ -44,4 +44,11 @@ void CockpitUI::init() {
   ESP_LOGI(TAG, "Cockpit UI initialized with %d tabs", 3);
 }
 
+SwitchPage* CockpitUI::add_switch_page(const char* tab_name) {
+  // Insert before the Instruments tab (which is currently at index 1).
+  // Simpler: just append — Instruments and Status move to the right.
+  lv_obj_t* tab = lv_tabview_add_tab(tabview_, tab_name);
+  return new SwitchPage(tab);
+}
+
 }  // namespace sensesp_cockpit_display
