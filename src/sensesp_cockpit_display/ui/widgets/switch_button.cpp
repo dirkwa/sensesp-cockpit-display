@@ -5,7 +5,7 @@ namespace sensesp_cockpit_display {
 
 SwitchButton::SwitchButton(lv_obj_t* parent, const char* label_text) {
   button_ = lv_button_create(parent);
-  lv_obj_set_size(button_, LV_PCT(100), 52);
+  lv_obj_set_size(button_, LV_PCT(100), 44);
   lv_obj_set_style_radius(button_, 6, 0);
   lv_obj_set_style_border_width(button_, 1, 0);
   lv_obj_set_style_border_color(button_, theme::separator(), 0);

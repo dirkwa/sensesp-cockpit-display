@@ -18,8 +18,10 @@ class DisplayDriver {
   virtual size_t get_draw_buffer_size() = 0;
 
   /// Push the framebuffer content to the display hardware.
-  /// Called from the LVGL flush callback.
-  virtual void flush(const void* buf) = 0;
+  /// Called from the LVGL flush callback. For partial rendering,
+  /// (x, y, w, h) define the rectangle and `buf` is the RGB565
+  /// pixel data for just that rectangle.
+  virtual void flush(int x, int y, int w, int h, const void* buf) = 0;
 };
 
 }  // namespace sensesp_cockpit_display

@@ -22,7 +22,7 @@ class Waveshare7BDisplay : public DisplayDriver {
   uint16_t height() const override { return kHeight; }
   void* get_draw_buffer(int index) override;
   size_t get_draw_buffer_size() override { return kBufferSize; }
-  void flush(const void* buf) override;
+  void flush(int x, int y, int w, int h, const void* buf) override;
 
  private:
   void init_ldo();

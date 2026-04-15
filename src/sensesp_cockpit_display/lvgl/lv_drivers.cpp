@@ -1,6 +1,7 @@
 #include "lv_drivers.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "esp_heap_caps.h"
 
 static const char* TAG = "lv_drivers";
 
@@ -8,11 +9,29 @@ namespace sensesp_cockpit_display {
 
 static DisplayDriver* s_display = nullptr;
 
-// LVGL flush callback — pushes the rendered buffer to the display hardware.
+// LVGL flush callback — rotates the partial region 180° in software
+// and writes it to the mirrored location on the panel.
 static void flush_cb(lv_display_t* disp, const lv_area_t* area,
                      uint8_t* px_map) {
   if (s_display) {
-    s_display->flush(px_map);
+    int w = area->x2 - area->x1 + 1;
+    int h = area->y2 - area->y1 + 1;
+    int disp_w = s_display->width();
+    int disp_h = s_display->height();
+
+    // Reverse the pixel order in place (180° rotation).
+    uint16_t* pixels = reinterpret_cast<uint16_t*>(px_map);
+    int total = w * h;
+    for (int i = 0; i < total / 2; i++) {
+      uint16_t tmp = pixels[i];
+      pixels[i] = pixels[total - 1 - i];
+      pixels[total - 1 - i] = tmp;
+    }
+
+    // Flip the area coordinates to the opposite side of the display.
+    int flipped_x = disp_w - (area->x1 + w);
+    int flipped_y = disp_h - (area->y1 + h);
+    s_display->flush(flipped_x, flipped_y, w, h, px_map);
   }
   lv_display_flush_ready(disp);
 }
@@ -45,18 +64,25 @@ void lvgl_init(DisplayDriver* display, TouchDriver* touch) {
   ESP_LOGI(TAG, "LVGL %d.%d.%d initialized", lv_version_major(),
            lv_version_minor(), lv_version_patch());
 
-  // Create LVGL display using the DMA framebuffers from the display driver
-  lv_display_t* lv_disp = lv_display_create(display->width(), display->height());
+  // PARTIAL render mode — LVGL allocates small buffers in PSRAM,
+  // rotates each rendered strip in software, and calls flush_cb to
+  // write it into the DPI framebuffer at the correct position.
+  // This mirrors Waveshare's own LVGL demo pattern (sw_rotate = true).
+  lv_display_t* lv_disp = lv_display_create(display->width(),
+                                             display->height());
   lv_display_set_flush_cb(lv_disp, flush_cb);
-  lv_display_set_buffers(lv_disp,
-                         display->get_draw_buffer(0),
-                         display->get_draw_buffer(1),
-                         display->get_draw_buffer_size(),
-                         LV_DISPLAY_RENDER_MODE_DIRECT);
 
-  // Rotate 180° — the EK79007 panel boots upside-down relative to how
-  // the Waveshare board is usually mounted (USB/antenna at top).
-  lv_display_set_rotation(lv_disp, LV_DISPLAY_ROTATION_180);
+  size_t buf_size = display->width() * (display->height() / 10) *
+                    sizeof(uint16_t);
+  static void* partial_buf1 =
+      heap_caps_malloc(buf_size, MALLOC_CAP_SPIRAM);
+  static void* partial_buf2 =
+      heap_caps_malloc(buf_size, MALLOC_CAP_SPIRAM);
+  lv_display_set_buffers(lv_disp, partial_buf1, partial_buf2, buf_size,
+                         LV_DISPLAY_RENDER_MODE_PARTIAL);
+
+  // Rotation is handled manually in flush_cb and indev_read_cb.
+  // LVGL's set_rotation doesn't work reliably with partial mode + our flush.
 
   // Create LVGL input device for touch
   lv_indev_t* lv_indev = lv_indev_create();

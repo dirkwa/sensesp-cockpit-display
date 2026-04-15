@@ -79,6 +79,8 @@ void Waveshare7BDisplay::init() {
   gpio_set_level(kResetGpio, 1);
   ESP_ERROR_CHECK(esp_lcd_panel_init(panel_));
 
+  // Rotation handled by LVGL (lv_display_set_rotation)
+
   ESP_ERROR_CHECK(esp_lcd_dpi_panel_get_frame_buffer(
       panel_, kNumBuffers, &framebuffers_[0], &framebuffers_[1]));
 
@@ -94,8 +96,10 @@ void* Waveshare7BDisplay::get_draw_buffer(int index) {
   return framebuffers_[index % kNumBuffers];
 }
 
-void Waveshare7BDisplay::flush(const void* buf) {
-  esp_lcd_panel_draw_bitmap(panel_, 0, 0, kWidth, kHeight, buf);
+void Waveshare7BDisplay::flush(int x, int y, int w, int h, const void* buf) {
+  // Push a rectangular region to the panel. LVGL PARTIAL mode handles
+  // rotation and gives us the already-rotated pixels for this region.
+  esp_lcd_panel_draw_bitmap(panel_, x, y, x + w, y + h, buf);
 }
 
 void Waveshare7BDisplay::init_ldo() {
@@ -190,7 +194,8 @@ TouchDriver::TouchPoint Waveshare7BTouch::read() {
     if (cnt > 0 && cnt <= 5) {
       uint8_t tdata[8] = {};
       gt911_read_regs(kPointReg, tdata, 8);
-      // Raw touch; LVGL rotation handles the flip
+      // Raw touch — display is flipped in flush_cb, so the touch
+      // coordinates already match the visible orientation.
       pt.x = tdata[1] | (tdata[2] << 8);
       pt.y = tdata[3] | (tdata[4] << 8);
       pt.pressed = true;
