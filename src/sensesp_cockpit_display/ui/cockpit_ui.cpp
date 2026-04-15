@@ -43,6 +43,14 @@ SwitchPage* CockpitUI::add_switch_page(const char* tab_name) {
   return page;
 }
 
+ButtonSwitchPage* CockpitUI::add_button_switch_page(const char* tab_name) {
+  if (finalized_) {
+    ESP_LOGW(TAG, "add_button_switch_page after finalize()");
+  }
+  lv_obj_t* tab = lv_tabview_add_tab(tabview_, tab_name);
+  return new ButtonSwitchPage(tab);
+}
+
 SwitchPage* CockpitUI::get_switch_page() {
   if (switch_pages_.empty()) {
     return add_switch_page("SW");

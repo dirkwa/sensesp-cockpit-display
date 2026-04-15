@@ -5,6 +5,7 @@
 #include "../hal/display_driver.h"
 #include "../hal/touch_driver.h"
 #include "pages/switch_page.h"
+#include "pages/button_switch_page.h"
 #include "pages/instrument_page.h"
 #include "pages/status_page.h"
 
@@ -24,6 +25,9 @@ class CockpitUI {
 
   /// Add a switch page tab. Call these before finalize().
   SwitchPage* add_switch_page(const char* tab_name);
+
+  /// Add a lightweight button-based switch page tab.
+  ButtonSwitchPage* add_button_switch_page(const char* tab_name);
 
   /// Convenience: returns the first switch page (creates one named
   /// "SW" if none exist yet).
