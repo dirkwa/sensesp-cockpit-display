@@ -54,6 +54,10 @@ void lvgl_init(DisplayDriver* display, TouchDriver* touch) {
                          display->get_draw_buffer_size(),
                          LV_DISPLAY_RENDER_MODE_DIRECT);
 
+  // Rotate 180° — the EK79007 panel boots upside-down relative to how
+  // the Waveshare board is usually mounted (USB/antenna at top).
+  lv_display_set_rotation(lv_disp, LV_DISPLAY_ROTATION_180);
+
   // Create LVGL input device for touch
   lv_indev_t* lv_indev = lv_indev_create();
   lv_indev_set_type(lv_indev, LV_INDEV_TYPE_POINTER);

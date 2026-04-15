@@ -30,25 +30,39 @@ void CockpitUI::init() {
   lv_obj_set_style_bg_color(tab_bar, theme::header(), 0);
   lv_obj_set_style_bg_opa(tab_bar, LV_OPA_COVER, 0);
 
-  // Switches page
-  lv_obj_t* sw_tab = lv_tabview_add_tab(tabview_, "Switches");
-  switch_page_ = new SwitchPage(sw_tab);
-
-  // Instruments page
-  lv_obj_t* instr_tab = lv_tabview_add_tab(tabview_, "Instruments");
-  instrument_page_ = new InstrumentPage(instr_tab);
-
-  lv_obj_t* status_tab = lv_tabview_add_tab(tabview_, "Status");
-  status_page_ = new StatusPage(status_tab);
-
-  ESP_LOGI(TAG, "Cockpit UI initialized with %d tabs", 3);
+  ESP_LOGI(TAG, "Cockpit UI init — add switch pages, then call finalize()");
 }
 
 SwitchPage* CockpitUI::add_switch_page(const char* tab_name) {
-  // Insert before the Instruments tab (which is currently at index 1).
-  // Simpler: just append — Instruments and Status move to the right.
+  if (finalized_) {
+    ESP_LOGW(TAG, "add_switch_page after finalize() — appended after Stat");
+  }
   lv_obj_t* tab = lv_tabview_add_tab(tabview_, tab_name);
-  return new SwitchPage(tab);
+  auto* page = new SwitchPage(tab);
+  switch_pages_.push_back(page);
+  return page;
+}
+
+SwitchPage* CockpitUI::get_switch_page() {
+  if (switch_pages_.empty()) {
+    return add_switch_page("SW");
+  }
+  return switch_pages_.front();
+}
+
+void CockpitUI::finalize() {
+  if (finalized_) return;
+  finalized_ = true;
+
+  // Instruments and Status tabs with short names
+  lv_obj_t* instr_tab = lv_tabview_add_tab(tabview_, "Inst");
+  instrument_page_ = new InstrumentPage(instr_tab);
+
+  lv_obj_t* status_tab = lv_tabview_add_tab(tabview_, "Stat");
+  status_page_ = new StatusPage(status_tab);
+
+  ESP_LOGI(TAG, "Cockpit UI finalized with %u switch pages + Inst + Stat",
+           (unsigned)switch_pages_.size());
 }
 
 }  // namespace sensesp_cockpit_display

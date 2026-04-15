@@ -22,9 +22,9 @@ SwitchPage::SwitchPage(lv_obj_t* parent) {
 SwitchWidget* SwitchPage::add_switch(const char* label) {
   auto sw = std::make_unique<SwitchWidget>(grid_, label);
 
-  // Size each switch to fill ~1/4 of the width (4 columns on 1024px)
-  // minus padding. This adapts naturally to different screen widths.
-  lv_obj_set_width(sw->get_obj(), LV_PCT(23));
+  // 3 columns × 8 rows = 24 switches per page on 1024x600
+  // (compact horizontal layout: label + ON/OFF + toggle)
+  lv_obj_set_width(sw->get_obj(), LV_PCT(32));
 
   auto* ptr = sw.get();
   switches_.push_back(std::move(sw));

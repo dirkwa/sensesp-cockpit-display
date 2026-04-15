@@ -1,5 +1,6 @@
 #pragma once
 
+#include <vector>
 #include "lvgl.h"
 #include "../hal/display_driver.h"
 #include "../hal/touch_driver.h"
@@ -14,14 +15,20 @@ class CockpitUI {
  public:
   CockpitUI(DisplayDriver* display, TouchDriver* touch);
 
+  /// Initialize LVGL + display. Call before add_switch_page().
+  /// After adding all switch pages, call finalize() to append the
+  /// Instruments + Status tabs at the end.
   void init();
+  void finalize();
   void tick() { lv_timer_handler(); }
 
-  SwitchPage* get_switch_page() { return switch_page_; }
-
-  /// Add an additional switch page tab with a custom name.
-  /// Useful for grouping switches by location/function.
+  /// Add a switch page tab. Call these before finalize().
   SwitchPage* add_switch_page(const char* tab_name);
+
+  /// Convenience: returns the first switch page (creates one named
+  /// "SW" if none exist yet).
+  SwitchPage* get_switch_page();
+
   InstrumentPage* get_instrument_page() { return instrument_page_; }
   StatusPage* get_status_page() { return status_page_; }
 
@@ -29,9 +36,10 @@ class CockpitUI {
   DisplayDriver* display_;
   TouchDriver* touch_;
   lv_obj_t* tabview_ = nullptr;
-  SwitchPage* switch_page_ = nullptr;
+  std::vector<SwitchPage*> switch_pages_;
   InstrumentPage* instrument_page_ = nullptr;
   StatusPage* status_page_ = nullptr;
+  bool finalized_ = false;
 };
 
 }  // namespace sensesp_cockpit_display

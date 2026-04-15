@@ -190,9 +190,9 @@ TouchDriver::TouchPoint Waveshare7BTouch::read() {
     if (cnt > 0 && cnt <= 5) {
       uint8_t tdata[8] = {};
       gt911_read_regs(kPointReg, tdata, 8);
-      // Mirror both axes to match display orientation
-      pt.x = 1023 - (tdata[1] | (tdata[2] << 8));
-      pt.y = 599 - (tdata[3] | (tdata[4] << 8));
+      // Raw touch; LVGL rotation handles the flip
+      pt.x = tdata[1] | (tdata[2] << 8);
+      pt.y = tdata[3] | (tdata[4] << 8);
       pt.pressed = true;
     }
     gt911_write_reg(kStatusReg, 0x00);
