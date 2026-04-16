@@ -51,7 +51,14 @@ static esp_err_t ota_post_handler(httpd_req_t* req) {
     }
 
     received += len;
-    if (received % (100 * 1024) < 1024) {
+
+    // Brief yield after each chunk — esp_hosted SDIO WiFi stalls under
+    // sustained continuous inbound reads. A small delay lets the SDIO
+    // driver drain its buffers (same pattern that makes MJPEG streaming
+    // work at 400KB/s while raw bulk upload stalls).
+    vTaskDelay(pdMS_TO_TICKS(2));
+
+    if (received % (100 * 1024) < 4096) {
       ESP_LOGI(TAG, "OTA progress: %d/%d (%d%%)", received, total,
                (int)(100LL * received / total));
     }
