@@ -9,8 +9,22 @@ static const char* TAG = "http_ota";
 
 namespace sensesp_cockpit_display {
 
+static OtaQuiesceCallback g_quiesce_cb;
+
+void set_ota_quiesce_callback(OtaQuiesceCallback cb) {
+  g_quiesce_cb = std::move(cb);
+}
+
 static esp_err_t ota_post_handler(httpd_req_t* req) {
   ESP_LOGW(TAG, "OTA update started, size=%d", req->content_len);
+
+  // Quiesce SDIO/WiFi-heavy tasks before the OTA write begins. Without
+  // this, candump TCP TX + TWAI rx + RPC polling saturate SDIO and the
+  // OTA recv stalls. After OTA succeeds we reboot so resume is moot.
+  if (g_quiesce_cb) {
+    ESP_LOGW(TAG, "Quiescing background tasks for OTA");
+    g_quiesce_cb();
+  }
 
   esp_ota_handle_t ota_handle;
   const esp_partition_t* update_partition =
@@ -52,12 +66,6 @@ static esp_err_t ota_post_handler(httpd_req_t* req) {
 
     received += len;
 
-    // Brief yield after each chunk — esp_hosted SDIO WiFi stalls under
-    // sustained continuous inbound reads. A small delay lets the SDIO
-    // driver drain its buffers (same pattern that makes MJPEG streaming
-    // work at 400KB/s while raw bulk upload stalls).
-    vTaskDelay(pdMS_TO_TICKS(2));
-
     if (received % (100 * 1024) < 4096) {
       ESP_LOGI(TAG, "OTA progress: %d/%d (%d%%)", received, total,
                (int)(100LL * received / total));
@@ -91,6 +99,10 @@ void http_ota_start(uint16_t port) {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.server_port = port;
   config.stack_size = 8192;
+  // Each httpd instance needs a UNIQUE ctrl_port (internal control socket).
+  // Default is 32768; shift by +port-offset so we don't collide with the
+  // SensESP main HTTP server's default ctrl_port (which is 32768).
+  config.ctrl_port = 32768 + port;
   // Large timeouts for slow esp_hosted WiFi
   config.recv_wait_timeout = 120;
   config.send_wait_timeout = 30;
