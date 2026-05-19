@@ -36,17 +36,26 @@ StatusPage::StatusPage(lv_obj_t* parent) {
 }
 
 void StatusPage::update_info(uint32_t uptime_s, uint32_t free_heap,
-                             uint32_t n2k_rx, uint32_t n2k_clients) {
+                             int64_t n2k_rx_idle_s, uint32_t n2k_clients) {
   char buf[128];
   uint32_t h = uptime_s / 3600;
   uint32_t m = (uptime_s / 60) % 60;
   uint32_t s = uptime_s % 60;
+  char n2k_buf[32];
+  if (n2k_rx_idle_s < 0) {
+    snprintf(n2k_buf, sizeof(n2k_buf), "no data yet");
+  } else if (n2k_rx_idle_s < 2) {
+    snprintf(n2k_buf, sizeof(n2k_buf), "live");
+  } else {
+    snprintf(n2k_buf, sizeof(n2k_buf), "idle %llds",
+             (long long)n2k_rx_idle_s);
+  }
   snprintf(buf, sizeof(buf),
            "Uptime: %02lu:%02lu:%02lu  |  Heap: %lu KB  |  "
-           "N2K rx=%lu clients=%lu",
+           "N2K %s  |  clients=%lu",
            (unsigned long)h, (unsigned long)m, (unsigned long)s,
            (unsigned long)(free_heap / 1024),
-           (unsigned long)n2k_rx, (unsigned long)n2k_clients);
+           n2k_buf, (unsigned long)n2k_clients);
   lv_label_set_text(info_label_, buf);
 }
 

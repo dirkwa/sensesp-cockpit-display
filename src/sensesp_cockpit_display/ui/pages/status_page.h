@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+
 #include "lvgl.h"
 #include "../widgets/status_indicator.h"
 
@@ -16,8 +18,9 @@ class StatusPage {
   StatusIndicator* ble() { return ble_; }
 
   /// Refresh dynamic info (uptime, heap, etc.)
+  /// n2k_rx_idle_s: seconds since last received N2K frame, or -1 if none yet.
   void update_info(uint32_t uptime_s, uint32_t free_heap,
-                   uint32_t n2k_rx, uint32_t n2k_clients);
+                   int64_t n2k_rx_idle_s, uint32_t n2k_clients);
 
  private:
   lv_obj_t* container_;
