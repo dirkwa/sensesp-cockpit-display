@@ -97,4 +97,7 @@
 #define LV_USE_OBSERVER 1
 #define LV_USE_FLOAT 1
 
+/* --- Snapshot (used by jlp /screenshot endpoint) --- */
+#define LV_USE_SNAPSHOT 1
+
 #endif /* LV_CONF_H */
