@@ -138,11 +138,12 @@ void Waveshare7BDisplay::init_backlight() {
 }
 
 void Waveshare7BDisplay::set_brightness(uint8_t pct) {
-  // LEDC channel is configured with output_invert=1, so duty 0 = full
-  // bright and duty 1023 = off. Invert the percentage so callers can
-  // think in normal terms (0 = off, 100 = full).
+  // Raw LEDC duty maps directly to brightness on this board:
+  // duty 0 = off, duty 1023 = full. Matches what init_backlight()
+  // writes at boot (duty 971 → bright). The `output_invert` flag on
+  // the channel config doesn't reverse the perceived behaviour here.
   if (pct > 100) pct = 100;
-  uint32_t duty = (1023 * (100 - pct)) / 100;
+  uint32_t duty = (1023 * pct) / 100;
   ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1, duty);
   ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1);
 }
@@ -205,7 +206,13 @@ void Waveshare7BTouch::init() {
 }
 
 TouchDriver::TouchPoint Waveshare7BTouch::read() {
-  TouchPoint pt = {0, 0, false};
+  // Default state is "released at the last-seen coordinates". LVGL
+  // distinguishes a click from a drag by comparing the press
+  // coordinates with the release coordinates — if we returned (0,0)
+  // on every release, every press at (x,y) where x|y != 0 would look
+  // like a drag-off-widget and never fire LV_EVENT_CLICKED.
+  static TouchPoint last = {0, 0, false};
+  TouchPoint pt = {last.x, last.y, false};
   if (!initialized_) return pt;
 
   uint8_t status = gt911_read_reg(kStatusReg);
@@ -219,6 +226,8 @@ TouchDriver::TouchPoint Waveshare7BTouch::read() {
       pt.x = tdata[1] | (tdata[2] << 8);
       pt.y = tdata[3] | (tdata[4] << 8);
       pt.pressed = true;
+      ESP_LOGI(TAG, "touch x=%d y=%d", pt.x, pt.y);
+      last = pt;
     }
     gt911_write_reg(kStatusReg, 0x00);
   }
