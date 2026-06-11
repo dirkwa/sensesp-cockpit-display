@@ -1,0 +1,3 @@
+# Force LF line endings on checkout regardless of the host's
+# core.autocrlf setting. Avoid tree-wide CRLF drift on Windows clones.
+* text=auto eol=lf
