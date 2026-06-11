@@ -108,4 +108,6 @@ void lvgl_tick() {
   lv_timer_handler();
 }
 
+DisplayDriver* get_display() { return s_display; }
+
 }  // namespace sensesp_cockpit_display

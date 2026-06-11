@@ -22,6 +22,16 @@ class DisplayDriver {
   /// (x, y, w, h) define the rectangle and `buf` is the RGB565
   /// pixel data for just that rectangle.
   virtual void flush(int x, int y, int w, int h, const void* buf) = 0;
+
+  /// Set the backlight brightness as a percentage (0-100). 0 = off.
+  /// Default no-op; boards with a controllable backlight override.
+  virtual void set_brightness(uint8_t /*pct*/) {}
+
+  /// Put the panel into sleep / out of sleep. When off, the panel
+  /// stops driving sync signals — typically combined with backlight
+  /// off for full power save. Restoring requires a redraw. Default
+  /// no-op; boards that support it override.
+  virtual void set_display_on(bool /*on*/) {}
 };
 
 }  // namespace sensesp_cockpit_display

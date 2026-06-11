@@ -137,6 +137,26 @@ void Waveshare7BDisplay::init_backlight() {
   ESP_ERROR_CHECK(ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1));
 }
 
+void Waveshare7BDisplay::set_brightness(uint8_t pct) {
+  // LEDC channel is configured with output_invert=1, so duty 0 = full
+  // bright and duty 1023 = off. Invert the percentage so callers can
+  // think in normal terms (0 = off, 100 = full).
+  if (pct > 100) pct = 100;
+  uint32_t duty = (1023 * (100 - pct)) / 100;
+  ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1, duty);
+  ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1);
+}
+
+void Waveshare7BDisplay::set_display_on(bool on) {
+  // EK79007 supports the DSI display-on / display-off command. With
+  // the panel off, the LCD's sync signals stop driving the ITO grid,
+  // which removes capacitive coupling into the GT911 touch layer.
+  // The chip can then detect fingertips even with the backlight at
+  // 0% (because the touch surface is no longer being saturated by
+  // the panel's own waveforms).
+  if (panel_) esp_lcd_panel_disp_on_off(panel_, on);
+}
+
 // ============================================================
 // Touch (GT911 via Arduino Wire)
 // ============================================================

@@ -23,6 +23,8 @@ class Waveshare7BDisplay : public DisplayDriver {
   void* get_draw_buffer(int index) override;
   size_t get_draw_buffer_size() override { return kBufferSize; }
   void flush(int x, int y, int w, int h, const void* buf) override;
+  void set_brightness(uint8_t pct) override;
+  void set_display_on(bool on) override;
 
  private:
   void init_ldo();

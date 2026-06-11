@@ -14,4 +14,9 @@ void lvgl_init(DisplayDriver* display, TouchDriver* touch);
 /// Typical usage: event_loop()->onRepeat(16, lvgl_tick);
 void lvgl_tick();
 
+/// Get the display driver passed to lvgl_init(), or nullptr if not yet
+/// initialized. Used by features (idle dimmer, etc.) that need to drive
+/// the backlight without owning the pointer themselves.
+DisplayDriver* get_display();
+
 }  // namespace sensesp_cockpit_display
