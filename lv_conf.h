@@ -13,8 +13,18 @@
 /* --- Color --- */
 #define LV_COLOR_DEPTH 16  /* RGB565 for MIPI-DSI panels */
 
-/* --- Memory --- */
-#define LV_MEM_CUSTOM 1  /* Use stdlib malloc (PSRAM-capable) */
+/* --- Memory ---
+ * LVGL 9 renamed the v8 LV_MEM_CUSTOM switch to LV_USE_STDLIB_MALLOC.
+ * Leaving the old macro set silently fell through to the v9 default
+ * (LV_STDLIB_BUILTIN + a 64 KB LV_MEM_SIZE pool), which a ~31-widget
+ * layout overruns while the previous tree is still allocated during
+ * the staging→swap window: lv_realloc() returns NULL and the next
+ * style access faults (get_local_style derefs a NULL styles array →
+ * Load access fault, MTVAL=0x28). Route every LVGL allocation through
+ * the C library heap (PSRAM-capable on the P4) instead. */
+#define LV_USE_STDLIB_MALLOC  LV_STDLIB_CLIB
+#define LV_USE_STDLIB_STRING  LV_STDLIB_CLIB
+#define LV_USE_STDLIB_SPRINTF LV_STDLIB_CLIB
 
 /* --- OS --- */
 #define LV_USE_OS LV_OS_NONE  /* We call lv_timer_handler() from ReactESP loop */
