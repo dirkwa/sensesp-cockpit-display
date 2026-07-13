@@ -8,9 +8,13 @@ library so each downstream firmware doesn't have to re-implement them.
 ## What's in here
 
 - **`hal/`** — `DisplayDriver` + `TouchDriver` interfaces and
-  per-board implementations. Today: Waveshare ESP32-P4-WIFI6-Touch-LCD-7B
-  (EK79007 MIPI-DSI + GT911 capacitive touch). Add a board by
-  implementing both interfaces.
+  per-board implementations. Boards:
+  - **Waveshare ESP32-P4-WIFI6-Touch-LCD-7B** — EK79007 MIPI-DSI,
+    1024×600, GT911 touch.
+  - **Waveshare ESP32-P4-WIFI6-Touch-LCD-4B** — ST7703 MIPI-DSI,
+    720×720, GT911 touch (needs two LDO rails vs the 7B's one).
+
+  Add a board by implementing both interfaces.
 - **`lvgl/`** — `lvgl_init(display, touch)` wires the HAL into LVGL's
   display + indev infrastructure, owns the partial-render buffers,
   and runs the 1 ms tick via `esp_timer`.
