@@ -40,6 +40,11 @@ static constexpr uint8_t kEs8311Addr = ES8311_CODEC_DEFAULT_ADDR;
 // the audio task owns and frees after writing. Kept small — a chime is
 // a fraction of a second at 16 kHz.
 namespace {
+// Upper bound on a single clip: 5 s of mono frames at the codec rate.
+// Far above any alert tone, well below the size where frames*channels*
+// bytes could overflow size_t.
+constexpr size_t kMaxClipFrames =
+    5 * sensesp_cockpit_display::WaveshareAudio::kSampleRate;
 struct Clip {
   int16_t* samples;
   size_t frames;
@@ -91,10 +96,17 @@ void WaveshareAudio::init() {
     ESP_LOGE(TAG, "i2s std init failed: %s", esp_err_to_name(err));
     return;
   }
-  ESP_ERROR_CHECK(i2s_channel_enable(tx_chan_));
+  err = i2s_channel_enable(tx_chan_);
+  if (err != ESP_OK) {
+    // ESP_ERROR_CHECK would be a no-op in non-assert builds and let init
+    // fall through to advertise a ready path that never enabled TX.
+    ESP_LOGE(TAG, "i2s channel enable failed: %s", esp_err_to_name(err));
+    i2s_del_channel(tx_chan_);
+    tx_chan_ = nullptr;
+    return;
+  }
 
-  // --- ES8311 codec via esp_codec_dev. It drives PA_CTRL itself
-  //     (pa_pin) so the amplifier is only powered while playing. ---
+  // --- ES8311 codec via esp_codec_dev. ---
   audio_codec_i2c_cfg_t i2c_ctrl_cfg = {};
   i2c_ctrl_cfg.port = kI2cPort;  // shared with touch; bus_handle is what's used
   i2c_ctrl_cfg.addr = kEs8311Addr;
@@ -174,6 +186,11 @@ void WaveshareAudio::init() {
 
 void WaveshareAudio::play_pcm(const int16_t* samples, size_t frames) {
   if (!ready_ || !enabled_ || !samples || frames == 0) return;
+  // Cap the clip length. Alerts are well under a second; this both
+  // rejects absurd inputs and keeps every downstream byte-size
+  // computation (here and the stereo+tail buffer in run()) far from
+  // size_t overflow.
+  if (frames > kMaxClipFrames) return;
 
   // Copy into a heap buffer the audio task will own and free. Dropping
   // on a full queue is intentional: a chime is disposable, and the
@@ -196,9 +213,10 @@ void WaveshareAudio::set_volume(uint8_t pct) {
 }
 
 void WaveshareAudio::set_enabled(bool on) {
-  // play_pcm() early-outs when disabled, so no new clips are enqueued
-  // and the codec simply plays out silence.
   enabled_ = on;
+  // Also drop the amp so anything already queued or mid-write goes
+  // quiet; without this, disabling would only stop future enqueues.
+  if (ready_) gpio_set_level((gpio_num_t)kPaCtrl, on ? 1 : 0);
 }
 
 void WaveshareAudio::audio_task(void* arg) {

@@ -5,17 +5,11 @@
 
 namespace sensesp_cockpit_display {
 
-/// Abstract mono audio-out sink for boards that carry a codec +
-/// speaker (e.g. the Waveshare P4 panels' ES8311 + NS4150B). The
-/// contract mirrors DisplayDriver / TouchDriver: one pure-virtual
-/// interface, one concrete per-hardware implementation.
-///
-/// play_pcm() is non-blocking by contract — implementations copy the
-/// samples and return, doing the actual I2S write on their own task —
-/// so it is safe to call from the LVGL event_loop task (e.g. from an
-/// alert hook) without stalling rendering. The same interface is the
-/// intended sink for a future streamed voice feed; a caller that wants
-/// gapless playback pushes successive buffers.
+/// Abstract mono audio-out sink, mirroring DisplayDriver / TouchDriver:
+/// one interface, one per-board implementation. play_pcm() is
+/// non-blocking by contract so it is safe to call from the LVGL
+/// event_loop task. The same interface is the intended sink for a
+/// future streamed voice feed.
 class AudioDriver {
  public:
   virtual ~AudioDriver() = default;
