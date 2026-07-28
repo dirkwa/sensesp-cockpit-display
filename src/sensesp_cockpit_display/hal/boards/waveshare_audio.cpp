@@ -301,8 +301,14 @@ bool WaveshareAudio::begin_stream(uint32_t rate, uint8_t bits,
                                   uint8_t channels) {
   // Mono 16-bit only (the codec is opened as a stereo frame and we
   // duplicate L/R). A nonconforming format is refused so the caller can
-  // fall back rather than play garbage.
-  if (!ready_ || bits != 16 || channels != 1 || rate == 0) return false;
+  // fall back rather than play garbage. A muted board stays silent — like
+  // play_pcm(), honour enabled_ so "a quiet helm stays quiet".
+  if (!ready_ || !enabled_ || bits != 16 || channels != 1 || rate == 0) {
+    return false;
+  }
+  // Non-reentrant: the mutex is held for the whole stream, so a second
+  // begin_stream() before end_stream() would block forever. Refuse instead.
+  if (streaming_) return false;
   if (xSemaphoreTake(codec_mutex_, portMAX_DELAY) != pdTRUE) return false;
   bool ok = ensure_rate(rate);
   if (ok) {
@@ -332,7 +338,12 @@ size_t WaveshareAudio::write_stream(const int16_t* samples, size_t frames) {
     stream_stereo_[2 * i] = samples[i];
     stream_stereo_[2 * i + 1] = samples[i];
   }
-  esp_codec_dev_write(codec_, stream_stereo_, frames * 2 * sizeof(int16_t));
+  esp_err_t err =
+      esp_codec_dev_write(codec_, stream_stereo_, frames * 2 * sizeof(int16_t));
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "stream write failed: %s", esp_err_to_name(err));
+    return 0;  // report the codec fault rather than a phantom success
+  }
   return frames;
 }
 
@@ -345,7 +356,12 @@ void WaveshareAudio::end_stream() {
   size_t bytes = tail * 2 * sizeof(int16_t);
   void* zeros = calloc(1, bytes);
   if (zeros) {
-    esp_codec_dev_write(codec_, zeros, bytes);
+    esp_err_t err = esp_codec_dev_write(codec_, zeros, bytes);
+    if (err != ESP_OK) {
+      // A failed drain leaves the DMA ring on the last audio buffer, so the
+      // stream's tail can loop. Log it — the codec is in a bad state.
+      ESP_LOGW(TAG, "silence drain failed: %s", esp_err_to_name(err));
+    }
     free(zeros);
   }
   streaming_ = false;
