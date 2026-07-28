@@ -40,6 +40,34 @@ class AudioDriver {
   /// power amplifier is held disabled so a quiet helm stays quiet.
   /// Default no-op.
   virtual void set_enabled(bool /*on*/) {}
+
+  // --- Streaming playback (voice / TTS) -----------------------------------
+  //
+  // A continuous stream, unlike play_pcm()'s disposable fixed clips: no
+  // length cap, no per-chunk silence tail (that would gap the audio), and
+  // write_stream() BLOCKS to apply backpressure instead of dropping. The
+  // three calls bracket one audio-start / audio-chunk* / audio-stop span.
+  //
+  // Default no-ops so speaker-less boards still compile.
+
+  /// Begin a stream at `rate` Hz / `bits` per sample / `channels`. The
+  /// driver may reconfigure the codec to match `rate`. Returns false if
+  /// the format can't be played (caller should abandon the stream).
+  virtual bool begin_stream(uint32_t /*rate*/, uint8_t /*bits*/,
+                            uint8_t /*channels*/) {
+    return false;
+  }
+
+  /// Write `frames` signed-16-bit mono samples into the active stream.
+  /// BLOCKS until the codec accepts them (this is the flow control that
+  /// paces the sender). Returns frames written, 0 if no stream is active.
+  virtual size_t write_stream(const int16_t* /*samples*/, size_t /*frames*/) {
+    return 0;
+  }
+
+  /// End the active stream: drain the codec so the last chunk doesn't loop
+  /// on the DMA ring, then leave the codec open for the next stream/clip.
+  virtual void end_stream() {}
 };
 
 }  // namespace sensesp_cockpit_display

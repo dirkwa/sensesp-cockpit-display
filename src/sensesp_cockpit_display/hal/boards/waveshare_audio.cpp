@@ -156,7 +156,16 @@ void WaveshareAudio::init() {
     ESP_LOGE(TAG, "esp_codec_dev_open failed: %s", esp_err_to_name(err));
     return;
   }
+  open_rate_ = kSampleRate;
   esp_codec_dev_set_out_vol(codec_, vol_pct_);
+
+  // Serialises codec open/close/write between the chime task and a
+  // streaming caller. Created before the audio task starts.
+  codec_mutex_ = xSemaphoreCreateMutex();
+  if (!codec_mutex_) {
+    ESP_LOGE(TAG, "codec mutex alloc failed");
+    return;
+  }
 
   // Force the NS4150B amp enable HIGH directly, independent of the
   // codec driver's own pa_pin handling.
@@ -186,6 +195,9 @@ void WaveshareAudio::init() {
 
 void WaveshareAudio::play_pcm(const int16_t* samples, size_t frames) {
   if (!ready_ || !enabled_ || !samples || frames == 0) return;
+  // A chime during an active voice stream is disposable — drop it rather
+  // than fight the stream for the codec (and gap the speech with a tail).
+  if (streaming_) return;
   // Cap the clip length. Alerts are well under a second; this both
   // rejects absurd inputs and keeps every downstream byte-size
   // computation (here and the stereo+tail buffer in run()) far from
@@ -246,11 +258,104 @@ void WaveshareAudio::run() {
         stereo[2 * i + 1] = clip.samples[i];
       }
       memset(stereo + n * 2, 0, tail * 2 * sizeof(int16_t));
-      esp_codec_dev_write(codec_, stereo, total * 2 * sizeof(int16_t));
+      // Share the codec with the streaming path. If a voice stream grabbed
+      // the codec meanwhile, skip this chime (it's disposable).
+      if (xSemaphoreTake(codec_mutex_, pdMS_TO_TICKS(50)) == pdTRUE) {
+        if (!streaming_) {
+          ensure_rate(kSampleRate);
+          esp_codec_dev_write(codec_, stereo, total * 2 * sizeof(int16_t));
+        }
+        xSemaphoreGive(codec_mutex_);
+      }
       free(stereo);
     }
     free(clip.samples);
   }
+}
+
+bool WaveshareAudio::ensure_rate(uint32_t rate) {
+  // Caller holds codec_mutex_. Reopen the codec only when the rate changes;
+  // per-clip open/close proved unreliable on hardware, so we keep the codec
+  // open and only touch it on an actual rate switch.
+  if (rate == open_rate_) return true;
+  esp_codec_dev_close(codec_);
+  fs_.sample_rate = rate;
+  fs_.channel = 2;
+  fs_.bits_per_sample = 16;
+  esp_err_t err = esp_codec_dev_open(codec_, &fs_);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "codec reopen at %lu Hz failed: %s", (unsigned long)rate,
+             esp_err_to_name(err));
+    // Try to restore the default rate so the chime path still works.
+    fs_.sample_rate = kSampleRate;
+    if (esp_codec_dev_open(codec_, &fs_) == ESP_OK) open_rate_ = kSampleRate;
+    else open_rate_ = 0;
+    return false;
+  }
+  esp_codec_dev_set_out_vol(codec_, vol_pct_);
+  open_rate_ = rate;
+  return true;
+}
+
+bool WaveshareAudio::begin_stream(uint32_t rate, uint8_t bits,
+                                  uint8_t channels) {
+  // Mono 16-bit only (the codec is opened as a stereo frame and we
+  // duplicate L/R). A nonconforming format is refused so the caller can
+  // fall back rather than play garbage.
+  if (!ready_ || bits != 16 || channels != 1 || rate == 0) return false;
+  if (xSemaphoreTake(codec_mutex_, portMAX_DELAY) != pdTRUE) return false;
+  bool ok = ensure_rate(rate);
+  if (ok) {
+    streaming_ = true;
+    // Make sure the amp is live for the stream.
+    gpio_set_level((gpio_num_t)kPaCtrl, 1);
+  } else {
+    xSemaphoreGive(codec_mutex_);
+  }
+  // On success we HOLD codec_mutex_ across the whole stream so no chime can
+  // reopen the codec mid-utterance; end_stream releases it.
+  return ok;
+}
+
+size_t WaveshareAudio::write_stream(const int16_t* samples, size_t frames) {
+  if (!streaming_ || !samples || frames == 0) return 0;
+  // Duplicate mono -> interleaved L/R into a reusable buffer, then do the
+  // BLOCKING codec write. Blocking here is the backpressure that paces the
+  // sender; we never drop stream audio.
+  if (frames > stream_stereo_frames_) {
+    int16_t* nb = (int16_t*)realloc(stream_stereo_, frames * 2 * sizeof(int16_t));
+    if (!nb) return 0;  // keep the old buffer; caller may retry smaller
+    stream_stereo_ = nb;
+    stream_stereo_frames_ = frames;
+  }
+  for (size_t i = 0; i < frames; ++i) {
+    stream_stereo_[2 * i] = samples[i];
+    stream_stereo_[2 * i + 1] = samples[i];
+  }
+  esp_codec_dev_write(codec_, stream_stereo_, frames * 2 * sizeof(int16_t));
+  return frames;
+}
+
+void WaveshareAudio::end_stream() {
+  if (!streaming_) return;
+  // Flush a short block of silence: the I2S DMA ring auto-repeats its last
+  // buffer, so without a zero tail the final chunk drones. ~100 ms at the
+  // stream rate.
+  size_t tail = open_rate_ ? open_rate_ / 10 : kSampleRate / 10;
+  size_t bytes = tail * 2 * sizeof(int16_t);
+  void* zeros = calloc(1, bytes);
+  if (zeros) {
+    esp_codec_dev_write(codec_, zeros, bytes);
+    free(zeros);
+  }
+  streaming_ = false;
+  if (stream_stereo_) {
+    free(stream_stereo_);
+    stream_stereo_ = nullptr;
+    stream_stereo_frames_ = 0;
+  }
+  // Release the codec so chimes can play again. (begin_stream took it.)
+  xSemaphoreGive(codec_mutex_);
 }
 
 }  // namespace sensesp_cockpit_display
