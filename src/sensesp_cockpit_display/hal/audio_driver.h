@@ -68,6 +68,32 @@ class AudioDriver {
   /// End the active stream: drain the codec so the last chunk doesn't loop
   /// on the DMA ring, then leave the codec open for the next stream/clip.
   virtual void end_stream() {}
+
+  // --- Microphone capture (voice-in) --------------------------------------
+  //
+  // Default: no capture. A board with a wired mic overrides these.
+
+  /// True if this board can capture (a mic is wired to the codec ADC and
+  /// init brought it up). record_pcm() no-ops on a capture-less board.
+  virtual bool can_capture() const { return false; }
+
+  /// Sample rate of record_pcm() buffers. 16 kHz matches Whisper's native
+  /// rate, so a Wyoming mic stream needs no resampling.
+  virtual uint32_t capture_rate() const { return 16000; }
+
+  /// Read up to `max_frames` signed-16-bit mono samples into `out`,
+  /// BLOCKING until that many are captured (or a codec error). Returns the
+  /// number of frames read (0 on error / no capture). Call in a loop from a
+  /// dedicated task while streaming mic audio.
+  virtual size_t record_pcm(int16_t* /*out*/, size_t /*max_frames*/) {
+    return 0;
+  }
+
+  /// Start / stop the ADC capture path. start_capture() must be called
+  /// before record_pcm(); stop_capture() releases the ADC when voice-in
+  /// ends so idle draws no capture bandwidth. Idempotent. Default no-op.
+  virtual void start_capture() {}
+  virtual void stop_capture() {}
 };
 
 }  // namespace sensesp_cockpit_display
