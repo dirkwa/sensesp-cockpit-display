@@ -1,9 +1,11 @@
 #include "waveshare_audio.h"
 
+#include <climits>
 #include <cstdlib>
 #include <cstring>
 
 #include "esp_codec_dev_defaults.h"
+#include "es7210_adc.h"  // dual-mic capture codec (U17); mics are on this, not ES8311
 #include "esp_log.h"
 #include "driver/gpio.h"
 #include "esp32-hal-i2c.h"  // i2cBusHandle() — share Arduino Wire's bus
@@ -28,13 +30,23 @@ static constexpr int kI2sMclk = 13;
 static constexpr int kI2sBclk = 12;  // SCLK
 static constexpr int kI2sWs = 10;    // LCLK / word-select
 static constexpr int kI2sDout = 9;   // P4 -> codec (playback)
-static constexpr int kI2sDin = 11;   // codec -> P4 (mic; unused for now)
+static constexpr int kI2sDin = 11;   // ES7210 SDOUT -> P4 (mic capture)
 // I2C (SDA=7/SCL=8) is owned by the touch HAL's Arduino Wire; we borrow
 // its port-0 bus handle rather than re-declaring the pins here.
 static constexpr int kPaCtrl = 53;   // NS4150B enable, active high
 // ES8311_CODEC_DEFAULT_ADDR (0x30) is the 8-bit form; the i2c ctrl
 // driver right-shifts it to the 7-bit 0x18 the datasheet lists.
 static constexpr uint8_t kEs8311Addr = ES8311_CODEC_DEFAULT_ADDR;
+
+static constexpr int kMclkMultiple = 384;
+
+// Mic capture: the two onboard mics are wired to the ES7210 ADC (U17), NOT
+// the ES8311 — confirmed on the 7B schematic (ES8311 MIC input is unpopulated;
+// the ES7210's SDOUT1/TDMOUT = GPIO11/ASDOUT is our I2S DIN via R144). ES7210
+// I2C addr is 8-bit 0x80 (7-bit 0x40, A0/A1 to GND on the board). Both mics
+// are selected; the P4 is I2S master so the ES7210 is a slave.
+static constexpr uint8_t kEs7210Addr = ES7210_CODEC_DEFAULT_ADDR;  // 0x80
+static constexpr uint8_t kEs7210MicSel = ES7210_SEL_MIC1 | ES7210_SEL_MIC2;
 
 // One playback clip in flight: heap buffer of int16 mono samples that
 // the audio task owns and frees after writing. Kept small — a chime is
@@ -69,11 +81,14 @@ void WaveshareAudio::init() {
     return;
   }
 
-  // --- I2S standard mode, TX only, master, provides MCLK. ---
+  // --- I2S standard mode, master, provides MCLK. Full-duplex on one port:
+  //     TX drives the ES8311 DAC (speaker); RX carries the ES7210 ADC's
+  //     SDOUT (the onboard mics). Both share MCLK/BCLK/WS. ---
   esp_err_t err;
   i2s_chan_config_t chan_cfg =
       I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
-  err = i2s_new_channel(&chan_cfg, &tx_chan_, nullptr);
+  chan_cfg.auto_clear = true;  // clear stale DMA data (matches Waveshare ref)
+  err = i2s_new_channel(&chan_cfg, &tx_chan_, &rx_chan_);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "i2s channel init failed: %s", esp_err_to_name(err));
     return;
@@ -81,6 +96,7 @@ void WaveshareAudio::init() {
 
   i2s_std_config_t std_cfg = {};
   std_cfg.clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(kSampleRate);
+  std_cfg.clk_cfg.mclk_multiple = (i2s_mclk_multiple_t)kMclkMultiple;
   // Stereo slot even though the ES8311 is mono: the codec's I2S
   // interface expects a full L/R frame and takes the left channel;
   // a MONO slot left the DAC starved (hiss, no tone) on real hardware.
@@ -106,6 +122,19 @@ void WaveshareAudio::init() {
     return;
   }
 
+  // RX (mic) shares the full clock/slot/pin config with TX — the ES7210's
+  // SDOUT drives DIN (GPIO 11). Enabled at init (not deferred to first read)
+  // so the RX DMA is clocked from the start. A capture failure is non-fatal:
+  // playback still works.
+  err = i2s_channel_init_std_mode(rx_chan_, &std_cfg);
+  if (err == ESP_OK) err = i2s_channel_enable(rx_chan_);
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "i2s rx init/enable failed (no mic): %s",
+             esp_err_to_name(err));
+    i2s_del_channel(rx_chan_);
+    rx_chan_ = nullptr;
+  }
+
   // --- ES8311 codec via esp_codec_dev. ---
   audio_codec_i2c_cfg_t i2c_ctrl_cfg = {};
   i2c_ctrl_cfg.port = kI2cPort;  // shared with touch; bus_handle is what's used
@@ -116,6 +145,7 @@ void WaveshareAudio::init() {
   audio_codec_i2s_cfg_t i2s_data_cfg = {};
   i2s_data_cfg.port = I2S_NUM_0;
   i2s_data_cfg.tx_handle = tx_chan_;
+  i2s_data_cfg.rx_handle = rx_chan_;  // null if RX init failed above
   const audio_codec_data_if_t* data_if = audio_codec_new_i2s_data(&i2s_data_cfg);
 
   const audio_codec_gpio_if_t* gpio_if = audio_codec_new_gpio();
@@ -123,6 +153,8 @@ void WaveshareAudio::init() {
   es8311_codec_cfg_t es_cfg = {};
   es_cfg.ctrl_if = ctrl_if;
   es_cfg.gpio_if = gpio_if;
+  // DAC only — the ES8311 handles speaker output; capture is the ES7210's
+  // job (the ES8311 mic input is unpopulated on this board).
   es_cfg.codec_mode = ESP_CODEC_DEV_WORK_MODE_DAC;
   es_cfg.pa_pin = kPaCtrl;
   es_cfg.use_mclk = true;
@@ -158,6 +190,38 @@ void WaveshareAudio::init() {
   }
   open_rate_ = kSampleRate;
   esp_codec_dev_set_out_vol(codec_, vol_pct_);
+
+  // --- Mic capture device: ES7210 ADC (U17, I2C 0x80). Its SDOUT feeds our
+  //     I2S RX (rx_handle on DIN=11). Its own I2C control interface + the
+  //     shared I2S data interface. Opened lazily in start_capture(). ---
+  if (rx_chan_) {
+    audio_codec_i2c_cfg_t adc_i2c = {};
+    adc_i2c.port = kI2cPort;  // shared touch/codec bus
+    adc_i2c.addr = kEs7210Addr;
+    adc_i2c.bus_handle = i2c_bus_;
+    const audio_codec_ctrl_if_t* adc_ctrl = audio_codec_new_i2c_ctrl(&adc_i2c);
+
+    es7210_codec_cfg_t adc_cfg = {};
+    adc_cfg.ctrl_if = adc_ctrl;
+    adc_cfg.mic_selected = kEs7210MicSel;
+    adc_cfg.master_mode = false;  // P4 I2S is master
+    const audio_codec_if_t* adc_if = es7210_codec_new(&adc_cfg);
+
+    if (adc_if) {
+      esp_codec_dev_cfg_t in_cfg = {};
+      in_cfg.dev_type = ESP_CODEC_DEV_TYPE_IN;
+      in_cfg.codec_if = adc_if;
+      in_cfg.data_if = data_if;
+      codec_in_ = esp_codec_dev_new(&in_cfg);
+    }
+    if (codec_in_) {
+      capture_ready_ = true;
+      ESP_LOGI(TAG, "ES7210 mic capture available (%lu Hz)",
+               (unsigned long)kSampleRate);
+    } else {
+      ESP_LOGW(TAG, "ES7210 capture init failed — no mic");
+    }
+  }
 
   // Serialises codec open/close/write between the chime task and a
   // streaming caller. Created before the audio task starts.
@@ -372,6 +436,45 @@ void WaveshareAudio::end_stream() {
   }
   // Release the codec so chimes can play again. (begin_stream took it.)
   xSemaphoreGive(codec_mutex_);
+}
+
+void WaveshareAudio::start_capture() {
+  if (!capture_ready_ || capturing_) return;
+  fs_in_.sample_rate = kSampleRate;
+  fs_in_.channel = 1;  // mono capture — one ADC channel
+  fs_in_.bits_per_sample = 16;
+  esp_err_t err = esp_codec_dev_open(codec_in_, &fs_in_);
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "mic open failed: %s", esp_err_to_name(err));
+    return;
+  }
+  esp_codec_dev_set_in_gain(codec_in_, 30.0);
+  capturing_ = true;
+}
+
+size_t WaveshareAudio::record_pcm(int16_t* out, size_t max_frames) {
+  if (!capturing_ || !out || max_frames == 0) return 0;
+  // BLOCKING read of mono 16-bit frames from the ES7210 (opened mono, so one
+  // sample per frame — no L/R de-interleave needed). The block paces the
+  // caller. Uses its OWN device handle, independent of the playback stream.
+  // esp_codec_dev_read takes an int byte count — clamp so a huge request
+  // can't overflow it and then be reported as a full success.
+  size_t frames = max_frames;
+  const size_t max_by_int = (size_t)INT_MAX / sizeof(int16_t);
+  if (frames > max_by_int) frames = max_by_int;
+  esp_err_t err =
+      esp_codec_dev_read(codec_in_, out, (int)(frames * sizeof(int16_t)));
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "mic read failed: %s", esp_err_to_name(err));
+    return 0;
+  }
+  return frames;
+}
+
+void WaveshareAudio::stop_capture() {
+  if (!capturing_) return;
+  esp_codec_dev_close(codec_in_);
+  capturing_ = false;
 }
 
 }  // namespace sensesp_cockpit_display

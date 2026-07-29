@@ -36,6 +36,12 @@ class WaveshareAudio : public AudioDriver {
   size_t write_stream(const int16_t* samples, size_t frames) override;
   void end_stream() override;
 
+  bool can_capture() const override { return capture_ready_; }
+  uint32_t capture_rate() const override { return kSampleRate; }
+  size_t record_pcm(int16_t* out, size_t max_frames) override;
+  void start_capture() override;
+  void stop_capture() override;
+
  private:
   static void audio_task(void* arg);
   void run();  // audio task body
@@ -47,8 +53,13 @@ class WaveshareAudio : public AudioDriver {
 
   i2c_master_bus_handle_t i2c_bus_ = nullptr;
   i2s_chan_handle_t tx_chan_ = nullptr;
-  esp_codec_dev_handle_t codec_ = nullptr;
+  i2s_chan_handle_t rx_chan_ = nullptr;  // codec ADC -> P4 (mic)
+  esp_codec_dev_handle_t codec_ = nullptr;    // OUT (DAC / speaker)
+  esp_codec_dev_handle_t codec_in_ = nullptr;  // IN (ADC / mic)
   esp_codec_dev_sample_info_t fs_ = {};
+  esp_codec_dev_sample_info_t fs_in_ = {};
+  bool capture_ready_ = false;    // ADC brought up at init
+  volatile bool capturing_ = false;  // codec_in_ currently open
   double vol_pct_ = 50.0;
   uint32_t open_rate_ = 0;  // rate the codec is currently opened at
 
