@@ -32,20 +32,40 @@ class WaveshareAudio : public AudioDriver {
   void set_volume(uint8_t pct) override;
   void set_enabled(bool on) override;
 
+  bool begin_stream(uint32_t rate, uint8_t bits, uint8_t channels) override;
+  size_t write_stream(const int16_t* samples, size_t frames) override;
+  void end_stream() override;
+
  private:
   static void audio_task(void* arg);
   void run();  // audio task body
+
+  // Reopen the codec at `rate` Hz if it isn't already. Serialised by
+  // codec_mutex_. Returns false on codec error. Used by both the chime
+  // path (kSampleRate) and streaming (audio-start's rate).
+  bool ensure_rate(uint32_t rate);
 
   i2c_master_bus_handle_t i2c_bus_ = nullptr;
   i2s_chan_handle_t tx_chan_ = nullptr;
   esp_codec_dev_handle_t codec_ = nullptr;
   esp_codec_dev_sample_info_t fs_ = {};
   double vol_pct_ = 50.0;
+  uint32_t open_rate_ = 0;  // rate the codec is currently opened at
 
   QueueHandle_t queue_ = nullptr;  // of Clip (owned buffer + len)
   TaskHandle_t task_ = nullptr;
   volatile bool enabled_ = true;
   bool ready_ = false;
+
+  // Serialises codec open/close/write between the chime audio_task and a
+  // streaming caller (the Wyoming socket task). A stream and a chime never
+  // play at once: streaming_ makes play_pcm drop while a stream is active.
+  SemaphoreHandle_t codec_mutex_ = nullptr;
+  volatile bool streaming_ = false;
+  // Reusable interleave buffer for streaming L/R duplication (avoids a
+  // malloc per chunk). Grown on demand; freed at end_stream / never huge.
+  int16_t* stream_stereo_ = nullptr;
+  size_t stream_stereo_frames_ = 0;
 };
 
 }  // namespace sensesp_cockpit_display
