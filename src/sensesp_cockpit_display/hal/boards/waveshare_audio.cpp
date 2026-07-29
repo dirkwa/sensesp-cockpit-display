@@ -1,5 +1,6 @@
 #include "waveshare_audio.h"
 
+#include <climits>
 #include <cstdlib>
 #include <cstring>
 
@@ -29,7 +30,7 @@ static constexpr int kI2sMclk = 13;
 static constexpr int kI2sBclk = 12;  // SCLK
 static constexpr int kI2sWs = 10;    // LCLK / word-select
 static constexpr int kI2sDout = 9;   // P4 -> codec (playback)
-static constexpr int kI2sDin = 11;   // codec -> P4 (mic; unused for now)
+static constexpr int kI2sDin = 11;   // ES7210 SDOUT -> P4 (mic capture)
 // I2C (SDA=7/SCL=8) is owned by the touch HAL's Arduino Wire; we borrow
 // its port-0 bus handle rather than re-declaring the pins here.
 static constexpr int kPaCtrl = 53;   // NS4150B enable, active high
@@ -80,8 +81,9 @@ void WaveshareAudio::init() {
     return;
   }
 
-  // --- I2S standard mode, master, provides MCLK. TX (speaker) + RX (mic)
-  //     on the same full-duplex port; the ES8311 is a DAC+ADC codec. ---
+  // --- I2S standard mode, master, provides MCLK. Full-duplex on one port:
+  //     TX drives the ES8311 DAC (speaker); RX carries the ES7210 ADC's
+  //     SDOUT (the onboard mics). Both share MCLK/BCLK/WS. ---
   esp_err_t err;
   i2s_chan_config_t chan_cfg =
       I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
@@ -120,10 +122,10 @@ void WaveshareAudio::init() {
     return;
   }
 
-  // RX (mic) shares the full clock/slot/pin config with TX — the ES8311's
-  // ADC drives DIN (GPIO 11). Enable it now (like the Waveshare reference);
-  // deferring the enable to first read left the DMA un-clocked and captured
-  // dead-zero. A capture failure is non-fatal: playback still works.
+  // RX (mic) shares the full clock/slot/pin config with TX — the ES7210's
+  // SDOUT drives DIN (GPIO 11). Enabled at init (not deferred to first read)
+  // so the RX DMA is clocked from the start. A capture failure is non-fatal:
+  // playback still works.
   err = i2s_channel_init_std_mode(rx_chan_, &std_cfg);
   if (err == ESP_OK) err = i2s_channel_enable(rx_chan_);
   if (err != ESP_OK) {
@@ -455,13 +457,18 @@ size_t WaveshareAudio::record_pcm(int16_t* out, size_t max_frames) {
   // BLOCKING read of mono 16-bit frames from the ES7210 (opened mono, so one
   // sample per frame — no L/R de-interleave needed). The block paces the
   // caller. Uses its OWN device handle, independent of the playback stream.
-  int bytes = (int)(max_frames * sizeof(int16_t));
-  esp_err_t err = esp_codec_dev_read(codec_in_, out, bytes);
+  // esp_codec_dev_read takes an int byte count — clamp so a huge request
+  // can't overflow it and then be reported as a full success.
+  size_t frames = max_frames;
+  const size_t max_by_int = (size_t)INT_MAX / sizeof(int16_t);
+  if (frames > max_by_int) frames = max_by_int;
+  esp_err_t err =
+      esp_codec_dev_read(codec_in_, out, (int)(frames * sizeof(int16_t)));
   if (err != ESP_OK) {
     ESP_LOGW(TAG, "mic read failed: %s", esp_err_to_name(err));
     return 0;
   }
-  return max_frames;
+  return frames;
 }
 
 void WaveshareAudio::stop_capture() {
