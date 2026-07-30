@@ -448,7 +448,11 @@ void WaveshareAudio::start_capture() {
     ESP_LOGW(TAG, "mic open failed: %s", esp_err_to_name(err));
     return;
   }
-  esp_codec_dev_set_in_gain(codec_in_, 30.0);
+  // Max the ES7210 analog PGA (37.5 dB). The onboard MEMS mics are quiet —
+  // at 30 dB speech peaked near the noise floor (~100 on a 32767 scale),
+  // which whisper tolerates but openWakeWord will not detect. 37.5 dB is the
+  // driver's ceiling (get_db clamps >36 dB there).
+  esp_codec_dev_set_in_gain(codec_in_, 37.5);
   capturing_ = true;
 }
 
