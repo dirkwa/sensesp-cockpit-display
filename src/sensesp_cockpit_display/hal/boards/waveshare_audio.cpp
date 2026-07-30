@@ -43,10 +43,14 @@ static constexpr int kMclkMultiple = 384;
 // Mic capture: the two onboard mics are wired to the ES7210 ADC (U17), NOT
 // the ES8311 — confirmed on the 7B schematic (ES8311 MIC input is unpopulated;
 // the ES7210's SDOUT1/TDMOUT = GPIO11/ASDOUT is our I2S DIN via R144). ES7210
-// I2C addr is 8-bit 0x80 (7-bit 0x40, A0/A1 to GND on the board). Both mics
-// are selected; the P4 is I2S master so the ES7210 is a slave.
+// I2C addr is 8-bit 0x80 (7-bit 0x40, A0/A1 to GND on the board); the P4 is
+// I2S master so the ES7210 is a slave.
+// Capture MIC1 ONLY: MIC2 is dead on this board (flatlines at ~2 counts), and
+// selecting MIC1|MIC2 into a mono stream buries the live MIC1 voice — the
+// capture level collapses. Verified on hardware: MIC1 tracks speech, MIC2
+// does not.
 static constexpr uint8_t kEs7210Addr = ES7210_CODEC_DEFAULT_ADDR;  // 0x80
-static constexpr uint8_t kEs7210MicSel = ES7210_SEL_MIC1 | ES7210_SEL_MIC2;
+static constexpr uint8_t kEs7210MicSel = ES7210_SEL_MIC1;
 
 // One playback clip in flight: heap buffer of int16 mono samples that
 // the audio task owns and frees after writing. Kept small — a chime is
