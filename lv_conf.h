@@ -61,7 +61,7 @@
 #define LV_USE_SWITCH 1
 #define LV_USE_ARC 1
 #define LV_USE_BAR 1
-#define LV_USE_SLIDER 0
+#define LV_USE_SLIDER 1
 #define LV_USE_TABLE 0
 #define LV_USE_TEXTAREA 0
 #define LV_USE_KEYBOARD 0
