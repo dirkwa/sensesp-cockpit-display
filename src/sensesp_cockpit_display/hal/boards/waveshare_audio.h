@@ -5,6 +5,8 @@
 #include "esp_codec_dev.h"
 #include "driver/i2s_std.h"
 #include "driver/i2c_master.h"
+#include <atomic>
+
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
@@ -74,6 +76,12 @@ class WaveshareAudio : public AudioDriver {
   // consistent across tasks.
   int capture_users_ = 0;
   SemaphoreHandle_t capture_mutex_ = nullptr;
+  // True while record_pcm() is blocked inside esp_codec_dev_read(). record_pcm
+  // can't hold capture_mutex_ across its blocking read (that would deadlock the
+  // refcount + stall the other consumer), and esp_codec_dev is NOT safe for a
+  // concurrent read + close on one handle. So stop_capture() waits for this to
+  // clear before it closes the ADC. Atomic: set/read across tasks.
+  std::atomic<bool> reading_{false};
   double vol_pct_ = 50.0;
   uint32_t open_rate_ = 0;  // rate the codec is currently opened at
 

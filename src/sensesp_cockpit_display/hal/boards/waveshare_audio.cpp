@@ -240,6 +240,11 @@ void WaveshareAudio::init() {
   capture_mutex_ = xSemaphoreCreateMutex();
   if (!capture_mutex_) {
     ESP_LOGE(TAG, "capture mutex alloc failed");
+    // capture_ready_ was set true when codec_in_ opened; clear it so
+    // can_capture() reports false and start_capture()/stop_capture() bail out
+    // rather than running the refcount + open/close UNGUARDED (the very race
+    // this mutex exists to prevent).
+    capture_ready_ = false;
     return;
   }
 
@@ -510,8 +515,12 @@ size_t WaveshareAudio::record_pcm(int16_t* out, size_t max_frames) {
   size_t frames = max_frames;
   const size_t max_by_int = (size_t)INT_MAX / sizeof(int16_t);
   if (frames > max_by_int) frames = max_by_int;
+  // Mark the read in flight so stop_capture() won't close the handle under us
+  // (esp_codec_dev is not safe for concurrent read + close).
+  reading_.store(true);
   esp_err_t err =
       esp_codec_dev_read(codec_in_, out, (int)(frames * sizeof(int16_t)));
+  reading_.store(false);
   if (err != ESP_OK) {
     ESP_LOGW(TAG, "mic read failed: %s", esp_err_to_name(err));
     return 0;
@@ -525,6 +534,13 @@ void WaveshareAudio::stop_capture() {
   // Only the LAST consumer to leave closes the ADC. This is what stops one
   // consumer's stop_capture() from cutting the mic out from under the other.
   if (capture_users_ > 0 && --capture_users_ == 0 && capturing_) {
+    // Wait out any in-flight record_pcm() before closing — esp_codec_dev is
+    // not safe for a concurrent read + close on one handle. A read is a single
+    // ~32 ms chunk, so this settles almost immediately; bounded so a wedged
+    // read can't hang teardown forever.
+    for (int i = 0; i < 100 && reading_.load(); i++) {
+      vTaskDelay(pdMS_TO_TICKS(2));
+    }
     esp_codec_dev_close(codec_in_);
     capturing_ = false;
   }
