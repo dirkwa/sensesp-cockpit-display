@@ -234,6 +234,14 @@ void WaveshareAudio::init() {
     ESP_LOGE(TAG, "codec mutex alloc failed");
     return;
   }
+  // Serialises the capture refcount + ADC open/close between the wake engine
+  // and the run_mic pipeline (different tasks). Separate from codec_mutex_,
+  // which guards the playback codec.
+  capture_mutex_ = xSemaphoreCreateMutex();
+  if (!capture_mutex_) {
+    ESP_LOGE(TAG, "capture mutex alloc failed");
+    return;
+  }
 
   // Force the NS4150B amp enable HIGH directly, independent of the
   // codec driver's own pa_pin handling.
@@ -443,21 +451,32 @@ void WaveshareAudio::end_stream() {
 }
 
 void WaveshareAudio::start_capture() {
-  if (!capture_ready_ || capturing_) return;
-  fs_in_.sample_rate = kSampleRate;
-  fs_in_.channel = 1;  // mono capture — one ADC channel
-  fs_in_.bits_per_sample = 16;
-  esp_err_t err = esp_codec_dev_open(codec_in_, &fs_in_);
-  if (err != ESP_OK) {
-    ESP_LOGW(TAG, "mic open failed: %s", esp_err_to_name(err));
-    return;
+  if (!capture_ready_) return;
+  if (capture_mutex_) xSemaphoreTake(capture_mutex_, portMAX_DELAY);
+  // Refcount: the ADC opens on the first consumer and stays open while any
+  // consumer wants it. A second start_capture() (e.g. run_mic while the wake
+  // engine is already listening — or a resume() racing run_mic's stop) just
+  // bumps the count; it must NOT re-open (already open) nor let the other
+  // consumer's stop close it underneath us.
+  if (capture_users_++ == 0) {
+    fs_in_.sample_rate = kSampleRate;
+    fs_in_.channel = 1;  // mono capture — one ADC channel
+    fs_in_.bits_per_sample = 16;
+    esp_err_t err = esp_codec_dev_open(codec_in_, &fs_in_);
+    if (err != ESP_OK) {
+      ESP_LOGW(TAG, "mic open failed: %s", esp_err_to_name(err));
+      capture_users_ = 0;
+      if (capture_mutex_) xSemaphoreGive(capture_mutex_);
+      return;
+    }
+    // Max the ES7210 analog PGA (37.5 dB). The onboard MEMS mics are quiet —
+    // at 30 dB speech peaked near the noise floor (~100 on a 32767 scale),
+    // which whisper tolerates but a wake detector will not. 37.5 dB is the
+    // driver's ceiling (get_db clamps >36 dB there).
+    esp_codec_dev_set_in_gain(codec_in_, 37.5);
+    capturing_ = true;
   }
-  // Max the ES7210 analog PGA (37.5 dB). The onboard MEMS mics are quiet —
-  // at 30 dB speech peaked near the noise floor (~100 on a 32767 scale),
-  // which whisper tolerates but openWakeWord will not detect. 37.5 dB is the
-  // driver's ceiling (get_db clamps >36 dB there).
-  esp_codec_dev_set_in_gain(codec_in_, 37.5);
-  capturing_ = true;
+  if (capture_mutex_) xSemaphoreGive(capture_mutex_);
 }
 
 size_t WaveshareAudio::record_pcm(int16_t* out, size_t max_frames) {
@@ -480,9 +499,15 @@ size_t WaveshareAudio::record_pcm(int16_t* out, size_t max_frames) {
 }
 
 void WaveshareAudio::stop_capture() {
-  if (!capturing_) return;
-  esp_codec_dev_close(codec_in_);
-  capturing_ = false;
+  if (!capture_ready_) return;
+  if (capture_mutex_) xSemaphoreTake(capture_mutex_, portMAX_DELAY);
+  // Only the LAST consumer to leave closes the ADC. This is what stops one
+  // consumer's stop_capture() from cutting the mic out from under the other.
+  if (capture_users_ > 0 && --capture_users_ == 0 && capturing_) {
+    esp_codec_dev_close(codec_in_);
+    capturing_ = false;
+  }
+  if (capture_mutex_) xSemaphoreGive(capture_mutex_);
 }
 
 }  // namespace sensesp_cockpit_display

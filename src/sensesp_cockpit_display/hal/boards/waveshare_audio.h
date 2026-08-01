@@ -60,6 +60,16 @@ class WaveshareAudio : public AudioDriver {
   esp_codec_dev_sample_info_t fs_in_ = {};
   bool capture_ready_ = false;    // ADC brought up at init
   volatile bool capturing_ = false;  // codec_in_ currently open
+  // Reference count of active capture consumers. The mic has two independent
+  // users — the wake engine (always-on) and the Wyoming push-to-talk/wake
+  // pipeline (run_mic) — that start/stop it on different tasks. A single
+  // open/close flag let them desync (one's stop_capture() closed the ADC that
+  // the other still needed → record_pcm() returned 0 → AFE ringbuffer empty →
+  // wake stopped detecting). Refcounting keeps the ADC open while ANY consumer
+  // wants it. Guarded by capture_mutex_ so the count and the open/close stay
+  // consistent across tasks.
+  int capture_users_ = 0;
+  SemaphoreHandle_t capture_mutex_ = nullptr;
   double vol_pct_ = 50.0;
   uint32_t open_rate_ = 0;  // rate the codec is currently opened at
 
