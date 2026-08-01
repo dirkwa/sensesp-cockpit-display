@@ -5,6 +5,8 @@
 #include "esp_codec_dev.h"
 #include "driver/i2s_std.h"
 #include "driver/i2c_master.h"
+#include <atomic>
+
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
@@ -46,10 +48,14 @@ class WaveshareAudio : public AudioDriver {
   static void audio_task(void* arg);
   void run();  // audio task body
 
-  // Reopen the codec at `rate` Hz if it isn't already. Serialised by
-  // codec_mutex_. Returns false on codec error. Used by both the chime
-  // path (kSampleRate) and streaming (audio-start's rate).
+  // Reclock playback to `rate` Hz if it isn't already. Serialised by
+  // codec_mutex_. Returns false on error. Used by both the chime path
+  // (kSampleRate) and streaming (audio-start's rate).
   bool ensure_rate(uint32_t rate);
+  // Reclock the I2S TX channel AND (re)open the codec to `rate`. The I2S
+  // channel clock is the master playback clock — reopening only the codec-dev
+  // left it at the init rate, causing the intermittent "pipe" tone at 22050.
+  bool apply_rate(uint32_t rate);
 
   i2c_master_bus_handle_t i2c_bus_ = nullptr;
   i2s_chan_handle_t tx_chan_ = nullptr;
@@ -60,6 +66,22 @@ class WaveshareAudio : public AudioDriver {
   esp_codec_dev_sample_info_t fs_in_ = {};
   bool capture_ready_ = false;    // ADC brought up at init
   volatile bool capturing_ = false;  // codec_in_ currently open
+  // Reference count of active capture consumers. The mic has two independent
+  // users — the wake engine (always-on) and the Wyoming push-to-talk/wake
+  // pipeline (run_mic) — that start/stop it on different tasks. A single
+  // open/close flag let them desync (one's stop_capture() closed the ADC that
+  // the other still needed → record_pcm() returned 0 → AFE ringbuffer empty →
+  // wake stopped detecting). Refcounting keeps the ADC open while ANY consumer
+  // wants it. Guarded by capture_mutex_ so the count and the open/close stay
+  // consistent across tasks.
+  int capture_users_ = 0;
+  SemaphoreHandle_t capture_mutex_ = nullptr;
+  // True while record_pcm() is blocked inside esp_codec_dev_read(). record_pcm
+  // can't hold capture_mutex_ across its blocking read (that would deadlock the
+  // refcount + stall the other consumer), and esp_codec_dev is NOT safe for a
+  // concurrent read + close on one handle. So stop_capture() waits for this to
+  // clear before it closes the ADC. Atomic: set/read across tasks.
+  std::atomic<bool> reading_{false};
   double vol_pct_ = 50.0;
   uint32_t open_rate_ = 0;  // rate the codec is currently opened at
 

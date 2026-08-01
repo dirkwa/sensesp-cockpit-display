@@ -234,6 +234,19 @@ void WaveshareAudio::init() {
     ESP_LOGE(TAG, "codec mutex alloc failed");
     return;
   }
+  // Serialises the capture refcount + ADC open/close between the wake engine
+  // and the run_mic pipeline (different tasks). Separate from codec_mutex_,
+  // which guards the playback codec.
+  capture_mutex_ = xSemaphoreCreateMutex();
+  if (!capture_mutex_) {
+    ESP_LOGE(TAG, "capture mutex alloc failed");
+    // capture_ready_ was set true when codec_in_ opened; clear it so
+    // can_capture() reports false and start_capture()/stop_capture() bail out
+    // rather than running the refcount + open/close UNGUARDED (the very race
+    // this mutex exists to prevent).
+    capture_ready_ = false;
+    return;
+  }
 
   // Force the NS4150B amp enable HIGH directly, independent of the
   // codec driver's own pa_pin handling.
@@ -341,28 +354,49 @@ void WaveshareAudio::run() {
   }
 }
 
-bool WaveshareAudio::ensure_rate(uint32_t rate) {
-  // Caller holds codec_mutex_. Reopen the codec only when the rate changes;
-  // per-clip open/close proved unreliable on hardware, so we keep the codec
-  // open and only touch it on an actual rate switch.
-  if (rate == open_rate_) return true;
+// Reclock the I2S TX channel to `rate` and (re)open the codec at that rate.
+// Caller holds codec_mutex_. Returns false on failure with open_rate_ left
+// consistent (or 0 if even the fallback failed).
+bool WaveshareAudio::apply_rate(uint32_t rate) {
+  // The MASTER I2S clock is what actually sets playback speed. Reopening only
+  // the codec-dev (as before) left the I2S channel clock at its init rate, so
+  // a 22050 Hz voice sometimes played at the 16000 Hz clock — the "talking
+  // through a pipe" tone. Reconfigure the channel clock explicitly: the API
+  // requires the channel be disabled (READY) first, then re-enabled.
   esp_codec_dev_close(codec_);
+  i2s_channel_disable(tx_chan_);
+  i2s_std_clk_config_t clk = I2S_STD_CLK_DEFAULT_CONFIG(rate);
+  clk.mclk_multiple = (i2s_mclk_multiple_t)kMclkMultiple;
+  esp_err_t err = i2s_channel_reconfig_std_clock(tx_chan_, &clk);
+  if (err == ESP_OK) err = i2s_channel_enable(tx_chan_);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "i2s reclock to %lu Hz failed: %s", (unsigned long)rate,
+             esp_err_to_name(err));
+    return false;
+  }
   fs_.sample_rate = rate;
   fs_.channel = 2;
   fs_.bits_per_sample = 16;
-  esp_err_t err = esp_codec_dev_open(codec_, &fs_);
+  err = esp_codec_dev_open(codec_, &fs_);
   if (err != ESP_OK) {
-    ESP_LOGE(TAG, "codec reopen at %lu Hz failed: %s", (unsigned long)rate,
+    ESP_LOGE(TAG, "codec open at %lu Hz failed: %s", (unsigned long)rate,
              esp_err_to_name(err));
-    // Try to restore the default rate so the chime path still works.
-    fs_.sample_rate = kSampleRate;
-    if (esp_codec_dev_open(codec_, &fs_) == ESP_OK) open_rate_ = kSampleRate;
-    else open_rate_ = 0;
     return false;
   }
   esp_codec_dev_set_out_vol(codec_, vol_pct_);
   open_rate_ = rate;
   return true;
+}
+
+bool WaveshareAudio::ensure_rate(uint32_t rate) {
+  // Caller holds codec_mutex_. Only touch the hardware on an actual rate
+  // switch — the codec + I2S clock stay put otherwise.
+  if (rate == open_rate_) return true;
+  if (apply_rate(rate)) return true;
+  // Reclock/open failed — fall back to the native rate so the chime path and
+  // idle stay functional rather than leaving the codec closed.
+  if (!apply_rate(kSampleRate)) open_rate_ = 0;
+  return false;
 }
 
 bool WaveshareAudio::begin_stream(uint32_t rate, uint8_t bits,
@@ -443,21 +477,32 @@ void WaveshareAudio::end_stream() {
 }
 
 void WaveshareAudio::start_capture() {
-  if (!capture_ready_ || capturing_) return;
-  fs_in_.sample_rate = kSampleRate;
-  fs_in_.channel = 1;  // mono capture — one ADC channel
-  fs_in_.bits_per_sample = 16;
-  esp_err_t err = esp_codec_dev_open(codec_in_, &fs_in_);
-  if (err != ESP_OK) {
-    ESP_LOGW(TAG, "mic open failed: %s", esp_err_to_name(err));
-    return;
+  if (!capture_ready_) return;
+  if (capture_mutex_) xSemaphoreTake(capture_mutex_, portMAX_DELAY);
+  // Refcount: the ADC opens on the first consumer and stays open while any
+  // consumer wants it. A second start_capture() (e.g. run_mic while the wake
+  // engine is already listening — or a resume() racing run_mic's stop) just
+  // bumps the count; it must NOT re-open (already open) nor let the other
+  // consumer's stop close it underneath us.
+  if (capture_users_++ == 0) {
+    fs_in_.sample_rate = kSampleRate;
+    fs_in_.channel = 1;  // mono capture — one ADC channel
+    fs_in_.bits_per_sample = 16;
+    esp_err_t err = esp_codec_dev_open(codec_in_, &fs_in_);
+    if (err != ESP_OK) {
+      ESP_LOGW(TAG, "mic open failed: %s", esp_err_to_name(err));
+      capture_users_ = 0;
+      if (capture_mutex_) xSemaphoreGive(capture_mutex_);
+      return;
+    }
+    // Max the ES7210 analog PGA (37.5 dB). The onboard MEMS mics are quiet —
+    // at 30 dB speech peaked near the noise floor (~100 on a 32767 scale),
+    // which whisper tolerates but a wake detector will not. 37.5 dB is the
+    // driver's ceiling (get_db clamps >36 dB there).
+    esp_codec_dev_set_in_gain(codec_in_, 37.5);
+    capturing_ = true;
   }
-  // Max the ES7210 analog PGA (37.5 dB). The onboard MEMS mics are quiet —
-  // at 30 dB speech peaked near the noise floor (~100 on a 32767 scale),
-  // which whisper tolerates but openWakeWord will not detect. 37.5 dB is the
-  // driver's ceiling (get_db clamps >36 dB there).
-  esp_codec_dev_set_in_gain(codec_in_, 37.5);
-  capturing_ = true;
+  if (capture_mutex_) xSemaphoreGive(capture_mutex_);
 }
 
 size_t WaveshareAudio::record_pcm(int16_t* out, size_t max_frames) {
@@ -470,8 +515,12 @@ size_t WaveshareAudio::record_pcm(int16_t* out, size_t max_frames) {
   size_t frames = max_frames;
   const size_t max_by_int = (size_t)INT_MAX / sizeof(int16_t);
   if (frames > max_by_int) frames = max_by_int;
+  // Mark the read in flight so stop_capture() won't close the handle under us
+  // (esp_codec_dev is not safe for concurrent read + close).
+  reading_.store(true);
   esp_err_t err =
       esp_codec_dev_read(codec_in_, out, (int)(frames * sizeof(int16_t)));
+  reading_.store(false);
   if (err != ESP_OK) {
     ESP_LOGW(TAG, "mic read failed: %s", esp_err_to_name(err));
     return 0;
@@ -480,9 +529,22 @@ size_t WaveshareAudio::record_pcm(int16_t* out, size_t max_frames) {
 }
 
 void WaveshareAudio::stop_capture() {
-  if (!capturing_) return;
-  esp_codec_dev_close(codec_in_);
-  capturing_ = false;
+  if (!capture_ready_) return;
+  if (capture_mutex_) xSemaphoreTake(capture_mutex_, portMAX_DELAY);
+  // Only the LAST consumer to leave closes the ADC. This is what stops one
+  // consumer's stop_capture() from cutting the mic out from under the other.
+  if (capture_users_ > 0 && --capture_users_ == 0 && capturing_) {
+    // Wait out any in-flight record_pcm() before closing — esp_codec_dev is
+    // not safe for a concurrent read + close on one handle. A read is a single
+    // ~32 ms chunk, so this settles almost immediately; bounded so a wedged
+    // read can't hang teardown forever.
+    for (int i = 0; i < 100 && reading_.load(); i++) {
+      vTaskDelay(pdMS_TO_TICKS(2));
+    }
+    esp_codec_dev_close(codec_in_);
+    capturing_ = false;
+  }
+  if (capture_mutex_) xSemaphoreGive(capture_mutex_);
 }
 
 }  // namespace sensesp_cockpit_display
