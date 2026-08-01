@@ -349,28 +349,49 @@ void WaveshareAudio::run() {
   }
 }
 
-bool WaveshareAudio::ensure_rate(uint32_t rate) {
-  // Caller holds codec_mutex_. Reopen the codec only when the rate changes;
-  // per-clip open/close proved unreliable on hardware, so we keep the codec
-  // open and only touch it on an actual rate switch.
-  if (rate == open_rate_) return true;
+// Reclock the I2S TX channel to `rate` and (re)open the codec at that rate.
+// Caller holds codec_mutex_. Returns false on failure with open_rate_ left
+// consistent (or 0 if even the fallback failed).
+bool WaveshareAudio::apply_rate(uint32_t rate) {
+  // The MASTER I2S clock is what actually sets playback speed. Reopening only
+  // the codec-dev (as before) left the I2S channel clock at its init rate, so
+  // a 22050 Hz voice sometimes played at the 16000 Hz clock — the "talking
+  // through a pipe" tone. Reconfigure the channel clock explicitly: the API
+  // requires the channel be disabled (READY) first, then re-enabled.
   esp_codec_dev_close(codec_);
+  i2s_channel_disable(tx_chan_);
+  i2s_std_clk_config_t clk = I2S_STD_CLK_DEFAULT_CONFIG(rate);
+  clk.mclk_multiple = (i2s_mclk_multiple_t)kMclkMultiple;
+  esp_err_t err = i2s_channel_reconfig_std_clock(tx_chan_, &clk);
+  if (err == ESP_OK) err = i2s_channel_enable(tx_chan_);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "i2s reclock to %lu Hz failed: %s", (unsigned long)rate,
+             esp_err_to_name(err));
+    return false;
+  }
   fs_.sample_rate = rate;
   fs_.channel = 2;
   fs_.bits_per_sample = 16;
-  esp_err_t err = esp_codec_dev_open(codec_, &fs_);
+  err = esp_codec_dev_open(codec_, &fs_);
   if (err != ESP_OK) {
-    ESP_LOGE(TAG, "codec reopen at %lu Hz failed: %s", (unsigned long)rate,
+    ESP_LOGE(TAG, "codec open at %lu Hz failed: %s", (unsigned long)rate,
              esp_err_to_name(err));
-    // Try to restore the default rate so the chime path still works.
-    fs_.sample_rate = kSampleRate;
-    if (esp_codec_dev_open(codec_, &fs_) == ESP_OK) open_rate_ = kSampleRate;
-    else open_rate_ = 0;
     return false;
   }
   esp_codec_dev_set_out_vol(codec_, vol_pct_);
   open_rate_ = rate;
   return true;
+}
+
+bool WaveshareAudio::ensure_rate(uint32_t rate) {
+  // Caller holds codec_mutex_. Only touch the hardware on an actual rate
+  // switch — the codec + I2S clock stay put otherwise.
+  if (rate == open_rate_) return true;
+  if (apply_rate(rate)) return true;
+  // Reclock/open failed — fall back to the native rate so the chime path and
+  // idle stay functional rather than leaving the codec closed.
+  if (!apply_rate(kSampleRate)) open_rate_ = 0;
+  return false;
 }
 
 bool WaveshareAudio::begin_stream(uint32_t rate, uint8_t bits,

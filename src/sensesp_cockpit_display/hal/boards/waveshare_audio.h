@@ -46,10 +46,14 @@ class WaveshareAudio : public AudioDriver {
   static void audio_task(void* arg);
   void run();  // audio task body
 
-  // Reopen the codec at `rate` Hz if it isn't already. Serialised by
-  // codec_mutex_. Returns false on codec error. Used by both the chime
-  // path (kSampleRate) and streaming (audio-start's rate).
+  // Reclock playback to `rate` Hz if it isn't already. Serialised by
+  // codec_mutex_. Returns false on error. Used by both the chime path
+  // (kSampleRate) and streaming (audio-start's rate).
   bool ensure_rate(uint32_t rate);
+  // Reclock the I2S TX channel AND (re)open the codec to `rate`. The I2S
+  // channel clock is the master playback clock — reopening only the codec-dev
+  // left it at the init rate, causing the intermittent "pipe" tone at 22050.
+  bool apply_rate(uint32_t rate);
 
   i2c_master_bus_handle_t i2c_bus_ = nullptr;
   i2s_chan_handle_t tx_chan_ = nullptr;
