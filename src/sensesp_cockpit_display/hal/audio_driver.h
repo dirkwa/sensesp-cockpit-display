@@ -94,6 +94,20 @@ class AudioDriver {
   /// ends so idle draws no capture bandwidth. Idempotent. Default no-op.
   virtual void start_capture() {}
   virtual void stop_capture() {}
+
+  // --- Diagnostic: per-input mic level probe --------------------------------
+  //
+  // Which physical ADC input each mic is wired to isn't documented for this
+  // board, so this measures all four ES7210 inputs to find the live mic(s).
+  // Levels for MIC1..MIC4 (index 0..3): RMS and peak magnitude of a short
+  // capture. A live mic tracks speech; an unpopulated input flatlines near the
+  // noise floor. Returns false if the board has no probe path. Must NOT be
+  // called while normal capture is running (it re-opens the ADC).
+  struct MicLevels {
+    uint16_t rms[4] = {0, 0, 0, 0};
+    uint16_t peak[4] = {0, 0, 0, 0};
+  };
+  virtual bool probe_mic_channels(MicLevels& /*out*/) { return false; }
 };
 
 }  // namespace sensesp_cockpit_display

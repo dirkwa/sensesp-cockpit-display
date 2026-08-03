@@ -43,6 +43,7 @@ class WaveshareAudio : public AudioDriver {
   size_t record_pcm(int16_t* out, size_t max_frames) override;
   void start_capture() override;
   void stop_capture() override;
+  bool probe_mic_channels(MicLevels& out) override;
 
  private:
   static void audio_task(void* arg);
@@ -62,6 +63,9 @@ class WaveshareAudio : public AudioDriver {
   i2s_chan_handle_t rx_chan_ = nullptr;  // codec ADC -> P4 (mic)
   esp_codec_dev_handle_t codec_ = nullptr;    // OUT (DAC / speaker)
   esp_codec_dev_handle_t codec_in_ = nullptr;  // IN (ADC / mic)
+  // Shared I2S data interface, kept so the diagnostic probe can build extra
+  // ES7210 device handles with a different mic_selected without re-creating I2S.
+  const audio_codec_data_if_t* data_if_ = nullptr;
   esp_codec_dev_sample_info_t fs_ = {};
   esp_codec_dev_sample_info_t fs_in_ = {};
   bool capture_ready_ = false;    // ADC brought up at init
