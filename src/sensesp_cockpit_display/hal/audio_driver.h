@@ -95,6 +95,37 @@ class AudioDriver {
   virtual void start_capture() {}
   virtual void stop_capture() {}
 
+  // --- Dual-mic capture (on-device wake feed only) ------------------------
+  //
+  // The Waveshare panel has TWO live mics (ES7210 MIC1 + MIC2). The mono
+  // record_pcm() path above feeds STT/PTT one mic; esp-sr's AFE can take BOTH
+  // (format "MM") for noise suppression / beamforming, which lifts far-field
+  // wake SNR. These give the wake engine a SEPARATE 2-channel capture handle so
+  // the mono STT path stays byte-identical. The two handles open the SAME I2S
+  // RX, so they must never be open at once — the wake engine pauses (releasing
+  // the 2ch handle) before the STT pipeline runs, so they don't overlap.
+  //
+  // Default: unsupported (single-mic boards keep the mono "M" AFE).
+
+  /// True if this board exposes a 2-channel [MIC1,MIC2] capture path
+  /// (start_capture2/record_pcm2/stop_capture2). When false the wake engine
+  /// stays on the single-mic mono feed. Default false.
+  virtual bool supports_dual_mic() const { return false; }
+
+  /// Open / close the 2-channel capture handle. Same refcounted, idempotent
+  /// contract as start_capture()/stop_capture(), on an independent handle.
+  /// Default no-op.
+  virtual void start_capture2() {}
+  virtual void stop_capture2() {}
+
+  /// Read up to `max_frames` 2-channel interleaved [MIC1,MIC2] int16 frames
+  /// into `out` (so `out` holds `2 * max_frames` samples), BLOCKING until that
+  /// many frames are captured (or a codec error). Returns the number of FRAMES
+  /// read (0 on error / unsupported). start_capture2() must precede it.
+  virtual size_t record_pcm2(int16_t* /*out*/, size_t /*max_frames*/) {
+    return 0;
+  }
+
   // --- Diagnostic: per-input mic level probe --------------------------------
   //
   // Which physical ADC input each mic is wired to isn't documented for this

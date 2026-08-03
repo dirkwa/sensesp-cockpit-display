@@ -227,6 +227,32 @@ void WaveshareAudio::init() {
     } else {
       ESP_LOGW(TAG, "ES7210 capture init failed — no mic");
     }
+
+    // Second ES7210 device selecting MIC1|MIC2 for the on-device wake feed's
+    // 2-channel path. Same shared I2C ctrl + I2S data interface; opened lazily
+    // by start_capture2() at channel=2. If this fails, supports_dual_mic()
+    // still reports true (it keys off capture_ready_) but start_capture2()
+    // will no-op — the wake engine falls back to the mono path only if the
+    // handle is missing, so guard on codec_in2_ there.
+    if (codec_in_) {
+      es7210_codec_cfg_t adc2_cfg = {};
+      adc2_cfg.ctrl_if = adc_ctrl;
+      adc2_cfg.mic_selected = ES7210_SEL_MIC1 | ES7210_SEL_MIC2;
+      adc2_cfg.master_mode = false;
+      const audio_codec_if_t* adc2_if = es7210_codec_new(&adc2_cfg);
+      if (adc2_if) {
+        esp_codec_dev_cfg_t in2_cfg = {};
+        in2_cfg.dev_type = ESP_CODEC_DEV_TYPE_IN;
+        in2_cfg.codec_if = adc2_if;
+        in2_cfg.data_if = data_if;
+        codec_in2_ = esp_codec_dev_new(&in2_cfg);
+      }
+      if (codec_in2_) {
+        ESP_LOGI(TAG, "ES7210 dual-mic (MIC1|MIC2) wake path available");
+      } else {
+        ESP_LOGW(TAG, "ES7210 dual-mic device init failed — wake stays mono");
+      }
+    }
   }
 
   // Serialises codec open/close/write between the chime task and a
@@ -248,6 +274,19 @@ void WaveshareAudio::init() {
     // this mutex exists to prevent).
     capture_ready_ = false;
     return;
+  }
+  // Guards the 2ch wake-feed handle's refcount + open/close. Separate from
+  // capture_mutex_ (mono handle); the two handles are never open at once but
+  // each needs its own consistent refcount across the wake feed vs the run_mic
+  // task lifetimes. If alloc fails, drop the dual-mic handle so start_capture2
+  // bails and the wake engine stays mono rather than running unguarded.
+  capture2_mutex_ = xSemaphoreCreateMutex();
+  if (!capture2_mutex_) {
+    ESP_LOGW(TAG, "dual-mic mutex alloc failed — wake stays mono");
+    if (codec_in2_) {
+      esp_codec_dev_delete(codec_in2_);
+      codec_in2_ = nullptr;
+    }
   }
 
   // Force the NS4150B amp enable HIGH directly, independent of the
@@ -547,6 +586,64 @@ void WaveshareAudio::stop_capture() {
     capturing_ = false;
   }
   if (capture_mutex_) xSemaphoreGive(capture_mutex_);
+}
+
+void WaveshareAudio::start_capture2() {
+  if (!codec_in2_ || !capture2_mutex_) return;
+  xSemaphoreTake(capture2_mutex_, portMAX_DELAY);
+  // Same refcount discipline as start_capture(), on the independent 2ch handle.
+  // The wake engine is the only consumer (its feed loop + pause/resume), so the
+  // count rarely exceeds 1, but resume() racing a stray stop still wants it.
+  if (capture2_users_++ == 0) {
+    fs_in2_.sample_rate = kSampleRate;
+    fs_in2_.channel = 2;  // MIC1|MIC2 interleaved — two ADC channels
+    fs_in2_.bits_per_sample = 16;
+    esp_err_t err = esp_codec_dev_open(codec_in2_, &fs_in2_);
+    if (err != ESP_OK) {
+      ESP_LOGW(TAG, "dual-mic open failed: %s", esp_err_to_name(err));
+      capture2_users_ = 0;
+      xSemaphoreGive(capture2_mutex_);
+      return;
+    }
+    esp_codec_dev_set_in_gain(codec_in2_, 37.5);  // match the mono path's PGA
+    capturing2_ = true;
+  }
+  xSemaphoreGive(capture2_mutex_);
+}
+
+size_t WaveshareAudio::record_pcm2(int16_t* out, size_t max_frames) {
+  if (!capturing2_ || !out || max_frames == 0) return 0;
+  // BLOCKING read of 2-channel interleaved [MIC1,MIC2] 16-bit frames. One frame
+  // = two int16 samples, so a byte count of frames * 2 * sizeof(int16_t).
+  // Clamp so frames*2 can't overflow the int esp_codec_dev_read takes.
+  size_t frames = max_frames;
+  const size_t max_by_int = (size_t)INT_MAX / (2 * sizeof(int16_t));
+  if (frames > max_by_int) frames = max_by_int;
+  reading2_.store(true);
+  esp_err_t err = esp_codec_dev_read(codec_in2_, out,
+                                     (int)(frames * 2 * sizeof(int16_t)));
+  reading2_.store(false);
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "dual-mic read failed: %s", esp_err_to_name(err));
+    return 0;
+  }
+  return frames;
+}
+
+void WaveshareAudio::stop_capture2() {
+  if (!codec_in2_ || !capture2_mutex_) return;
+  xSemaphoreTake(capture2_mutex_, portMAX_DELAY);
+  if (capture2_users_ > 0 && --capture2_users_ == 0 && capturing2_) {
+    // Wait out any in-flight record_pcm2() before closing (esp_codec_dev is not
+    // safe for concurrent read + close on one handle). Bounded like the mono
+    // path so a wedged read can't hang teardown.
+    for (int i = 0; i < 100 && reading2_.load(); i++) {
+      vTaskDelay(pdMS_TO_TICKS(2));
+    }
+    esp_codec_dev_close(codec_in2_);
+    capturing2_ = false;
+  }
+  xSemaphoreGive(capture2_mutex_);
 }
 
 namespace {
