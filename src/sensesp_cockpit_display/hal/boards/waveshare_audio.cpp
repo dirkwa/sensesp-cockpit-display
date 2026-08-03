@@ -1,6 +1,7 @@
 #include "waveshare_audio.h"
 
 #include <climits>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 
@@ -151,6 +152,7 @@ void WaveshareAudio::init() {
   i2s_data_cfg.tx_handle = tx_chan_;
   i2s_data_cfg.rx_handle = rx_chan_;  // null if RX init failed above
   const audio_codec_data_if_t* data_if = audio_codec_new_i2s_data(&i2s_data_cfg);
+  data_if_ = data_if;  // kept for the mic-channel diagnostic probe
 
   const audio_codec_gpio_if_t* gpio_if = audio_codec_new_gpio();
 
@@ -545,6 +547,91 @@ void WaveshareAudio::stop_capture() {
     capturing_ = false;
   }
   if (capture_mutex_) xSemaphoreGive(capture_mutex_);
+}
+
+namespace {
+// Capture one ES7210 mic pair (2 channels, standard I2S — no TDM) and fill the
+// RMS + peak for each of the two selected inputs. `mic_a`/`mic_b` are the
+// MicLevels indices (0..3) the two selected channels map to. Returns false on
+// any codec error. Opens/closes its own ES7210 device handle so it doesn't
+// touch the normal mono capture path.
+bool probe_pair(const audio_codec_ctrl_if_t* ctrl,
+                const audio_codec_data_if_t* data_if, uint8_t sel, int idx_a,
+                int idx_b, AudioDriver::MicLevels& out) {
+  es7210_codec_cfg_t cfg = {};
+  cfg.ctrl_if = ctrl;
+  cfg.mic_selected = sel;
+  cfg.master_mode = false;
+  const audio_codec_if_t* dev_if = es7210_codec_new(&cfg);
+  if (!dev_if) return false;
+  esp_codec_dev_cfg_t dev_cfg = {};
+  dev_cfg.dev_type = ESP_CODEC_DEV_TYPE_IN;
+  dev_cfg.codec_if = dev_if;
+  dev_cfg.data_if = data_if;
+  esp_codec_dev_handle_t dev = esp_codec_dev_new(&dev_cfg);
+  if (!dev) return false;
+
+  esp_codec_dev_sample_info_t fs = {};
+  fs.sample_rate = WaveshareAudio::kSampleRate;
+  fs.channel = 2;  // both selected inputs, interleaved L/R
+  fs.bits_per_sample = 16;
+  bool ok = false;
+  if (esp_codec_dev_open(dev, &fs) == ESP_OK) {
+    esp_codec_dev_set_in_gain(dev, 37.5);
+    // ~0.5 s of 2-channel frames, read in ~32 ms chunks.
+    constexpr int kFrames = 256;  // 512 int16 (L/R) per read
+    int16_t buf[kFrames * 2];
+    double sum_a = 0, sum_b = 0;
+    uint16_t peak_a = 0, peak_b = 0;
+    long n = 0;
+    for (int chunk = 0; chunk < 32; chunk++) {
+      if (esp_codec_dev_read(dev, buf, sizeof(buf)) != ESP_OK) break;
+      for (int i = 0; i < kFrames; i++) {
+        int a = buf[i * 2], b = buf[i * 2 + 1];
+        sum_a += (double)a * a;
+        sum_b += (double)b * b;
+        uint16_t ma = (uint16_t)(a < 0 ? -a : a);
+        uint16_t mb = (uint16_t)(b < 0 ? -b : b);
+        if (ma > peak_a) peak_a = ma;
+        if (mb > peak_b) peak_b = mb;
+      }
+      n += kFrames;
+    }
+    if (n > 0) {
+      out.rms[idx_a] = (uint16_t)sqrt(sum_a / n);
+      out.rms[idx_b] = (uint16_t)sqrt(sum_b / n);
+      out.peak[idx_a] = peak_a;
+      out.peak[idx_b] = peak_b;
+      ok = true;
+    }
+    esp_codec_dev_close(dev);
+  }
+  esp_codec_dev_delete(dev);
+  return ok;
+}
+}  // namespace
+
+bool WaveshareAudio::probe_mic_channels(MicLevels& out) {
+  if (!capture_ready_ || !data_if_ || !i2c_bus_) return false;
+  // Serialise against playback/capture opens on the shared codec + I2S.
+  if (codec_mutex_) xSemaphoreTake(codec_mutex_, portMAX_DELAY);
+  audio_codec_i2c_cfg_t i2c = {};
+  i2c.port = kI2cPort;
+  i2c.addr = kEs7210Addr;
+  i2c.bus_handle = i2c_bus_;
+  const audio_codec_ctrl_if_t* ctrl = audio_codec_new_i2c_ctrl(&i2c);
+  bool ok = false;
+  if (ctrl) {
+    // MIC1|MIC2 first, then MIC3|MIC4 — each pair stays in standard I2S (2
+    // slots); 3+ inputs would force TDM and a different RX slot layout.
+    bool p12 = probe_pair(ctrl, data_if_, ES7210_SEL_MIC1 | ES7210_SEL_MIC2, 0,
+                          1, out);
+    bool p34 = probe_pair(ctrl, data_if_, ES7210_SEL_MIC3 | ES7210_SEL_MIC4, 2,
+                          3, out);
+    ok = p12 || p34;
+  }
+  if (codec_mutex_) xSemaphoreGive(codec_mutex_);
+  return ok;
 }
 
 }  // namespace sensesp_cockpit_display
