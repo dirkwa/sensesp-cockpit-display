@@ -613,37 +613,8 @@ bool probe_pair(const audio_codec_ctrl_if_t* ctrl,
 
 bool WaveshareAudio::probe_mic_channels(MicLevels& out) {
   if (!capture_ready_ || !data_if_ || !i2c_bus_) return false;
-  // REFUSE while a normal capture is open. probe_pair() builds a SECOND ES7210
-  // device and opens it on the SHARED I2S RX, which reconfigures and then
-  // closes that RX. record_pcm() cannot hold a lock across its blocking read
-  // (see reading_ in the header — that would deadlock teardown), so there is no
-  // way to make the two safe concurrently: the probe pulls the RX out from
-  // under a live read and leaves the mono handle open-but-dead. capturing_
-  // stays true, every subsequent esp_codec_dev_read() errors, record_pcm()
-  // returns 0 forever, and the network wake loop spins without ever streaming
-  // another chunk. Observed live: /mic_probe4 froze the wake stream at a fixed
-  // chunk count until the wake session reconnected and rebuilt the handle.
-  //
-  // Diagnostics must never wedge the audio path, so the probe yields to the
-  // capture rather than the other way round. Callers get false and can retry
-  // once the mic is idle (the wake engine releases it during a pipeline, and
-  // /mic_probe4 already reports failure as 403-style "muted/unavailable").
-  if (capturing_) {
-    ESP_LOGW(TAG, "mic probe refused — capture in progress (would wedge it)");
-    return false;
-  }
-  // Serialise against playback/capture opens on the shared codec + I2S. Taking
-  // codec_mutex_ does NOT cover record_pcm() (which deliberately holds no
-  // lock), which is exactly why the capturing_ guard above is required too.
+  // Serialise against playback/capture opens on the shared codec + I2S.
   if (codec_mutex_) xSemaphoreTake(codec_mutex_, portMAX_DELAY);
-  // Re-check under the lock: a capture could have opened between the check
-  // above and acquiring the mutex (start_capture takes capture_mutex_, not
-  // this one, so the two can interleave).
-  if (capturing_) {
-    if (codec_mutex_) xSemaphoreGive(codec_mutex_);
-    ESP_LOGW(TAG, "mic probe refused — capture opened while acquiring lock");
-    return false;
-  }
   audio_codec_i2c_cfg_t i2c = {};
   i2c.port = kI2cPort;
   i2c.addr = kEs7210Addr;
