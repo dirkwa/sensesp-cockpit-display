@@ -57,6 +57,11 @@ class WaveshareAudio : public AudioDriver {
   static void audio_task(void* arg);
   void run();  // audio task body
 
+  // Re-enable the shared I2S RX after a capture close. Both capture handles
+  // sit on one rx_chan_ and esp_codec_dev disables it on close, so without
+  // this the next open on the OTHER handle reads a disabled channel.
+  void restore_rx_channel();
+
   // Reclock playback to `rate` Hz if it isn't already. Serialised by
   // codec_mutex_. Returns false on error. Used by both the chime path
   // (kSampleRate) and streaming (audio-start's rate).

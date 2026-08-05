@@ -426,6 +426,15 @@ bool WaveshareAudio::apply_rate(uint32_t rate) {
   }
   esp_codec_dev_set_out_vol(codec_, vol_pct_);
   open_rate_ = rate;
+  // TX and RX are full duplex on ONE I2S port sharing MCLK/BCLK/WS, so
+  // reclocking TX above disturbs the RX clock domain too (esp_codec_dev's own
+  // set_fs notes the converse: an RX clock change doesn't take effect without
+  // reconfiguring TX). With the dual-mic wake feed running, that left the RX
+  // disabled the moment a TTS answer played at a different rate than the mic's
+  // 16 kHz — the wake engine then read a dead channel and never recovered.
+  // Observed as wake firing once, answering, and going deaf ~25 s later (when
+  // the reply actually played), which looks like a bad wake re-arm but is not.
+  restore_rx_channel();
   return true;
 }
 
@@ -541,6 +550,9 @@ void WaveshareAudio::start_capture() {
     // which whisper tolerates but a wake detector will not. 37.5 dB is the
     // driver's ceiling (get_db clamps >36 dB there).
     esp_codec_dev_set_in_gain(codec_in_, 37.5);
+    // The open reconfigures the shared RX slot for THIS handle's channel count
+    // (see restore_rx_channel) and leaves the channel disabled. Put it back.
+    restore_rx_channel();
     capturing_ = true;
   }
   if (capture_mutex_) xSemaphoreGive(capture_mutex_);
@@ -584,8 +596,43 @@ void WaveshareAudio::stop_capture() {
     }
     esp_codec_dev_close(codec_in_);
     capturing_ = false;
+    restore_rx_channel();
   }
   if (capture_mutex_) xSemaphoreGive(capture_mutex_);
+}
+
+// Re-enable the SHARED I2S RX around capture open/close.
+//
+// The mono handle (codec_in_, 1ch) and the 2-channel wake handle (codec_in2_,
+// 2ch) are two esp_codec_dev instances over ONE rx_chan_. Two things take that
+// channel down, and BOTH have to be undone:
+//
+//  - close: esp_codec_dev calls i2s_channel_disable()
+//    (audio_codec_data_i2s.c `_i2s_drv_enable`).
+//  - open: the two handles ask for different channel counts, so the open runs
+//    i2s_channel_reconfig_std_slot() (via set_drv_fs) to reshape the RX slot.
+//    Reconfiguring requires a disabled channel and leaves it disabled.
+//
+// The open case is the one that actually bites: rx_chan_ is enabled once at
+// init and never again, so the first dual->mono->dual handoff leaves it down
+// and every read fails with "i2s_channel_read: The channel is not enabled"
+// while the AFE starves ("Ringbuffer of AFE is empty"). Observed on hardware as
+// on-device wake firing exactly ONCE and never re-arming after the first
+// pipeline. Re-enabling only after close is NOT enough — the reconfig happens
+// later, inside the next open.
+//
+// ESP_ERR_INVALID_STATE just means it is already enabled (the other handle
+// still holds it open) — not an error worth logging.
+void WaveshareAudio::restore_rx_channel() {
+  if (!rx_chan_) return;
+  esp_err_t err = i2s_channel_enable(rx_chan_);
+  if (err == ESP_OK) {
+    // It was DOWN and we just brought it back — worth knowing which call site
+    // dropped it. ESP_ERR_INVALID_STATE (already enabled) is the quiet path.
+    ESP_LOGI(TAG, "rx re-enabled (was down)");
+  } else if (err != ESP_ERR_INVALID_STATE) {
+    ESP_LOGW(TAG, "rx re-enable failed: %s", esp_err_to_name(err));
+  }
 }
 
 void WaveshareAudio::start_capture2() {
@@ -606,6 +653,7 @@ void WaveshareAudio::start_capture2() {
       return;
     }
     esp_codec_dev_set_in_gain(codec_in2_, 37.5);  // match the mono path's PGA
+    restore_rx_channel();  // reconfig on open leaves the shared RX disabled
     capturing2_ = true;
   }
   xSemaphoreGive(capture2_mutex_);
@@ -642,6 +690,7 @@ void WaveshareAudio::stop_capture2() {
     }
     esp_codec_dev_close(codec_in2_);
     capturing2_ = false;
+    restore_rx_channel();  // see the mono path — one shared rx_chan_
   }
   xSemaphoreGive(capture2_mutex_);
 }
