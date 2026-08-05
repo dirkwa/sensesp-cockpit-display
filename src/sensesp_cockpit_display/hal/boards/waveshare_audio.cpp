@@ -776,6 +776,14 @@ bool WaveshareAudio::probe_mic_channels(MicLevels& out) {
                           3, out);
     ok = p12 || p34;
   }
+  // probe_pair() opened and closed its own devices on the shared RX, which
+  // both reconfigured the slot layout and disabled the channel. The wake
+  // engine's handle is reopened by its resume(), but that reopen happens
+  // BEFORE this function returns on some paths and cannot fix a channel we
+  // take down afterwards — so put the RX back here too. Without this the
+  // engine resumes onto a dead channel and its feed reads pure silence
+  // (rms ~6) while the hardware is fine, which looks like the mic died.
+  restore_rx_channel();
   if (codec_mutex_) xSemaphoreGive(codec_mutex_);
   return ok;
 }
