@@ -45,9 +45,22 @@ class WaveshareAudio : public AudioDriver {
   void stop_capture() override;
   bool probe_mic_channels(MicLevels& out) override;
 
+  // Two live mics (MIC1|MIC2) — expose the 2-channel wake feed. True only once
+  // the 2ch handle actually built at init, so the wake engine's "MM" guard is
+  // exact (a failed dual-mic device build leaves the engine on the mono path).
+  bool supports_dual_mic() const override { return codec_in2_ != nullptr; }
+  void start_capture2() override;
+  void stop_capture2() override;
+  size_t record_pcm2(int16_t* out, size_t max_frames) override;
+
  private:
   static void audio_task(void* arg);
   void run();  // audio task body
+
+  // Re-enable the shared I2S RX after a capture close. Both capture handles
+  // sit on one rx_chan_ and esp_codec_dev disables it on close, so without
+  // this the next open on the OTHER handle reads a disabled channel.
+  void restore_rx_channel();
 
   // Reclock playback to `rate` Hz if it isn't already. Serialised by
   // codec_mutex_. Returns false on error. Used by both the chime path
@@ -86,6 +99,22 @@ class WaveshareAudio : public AudioDriver {
   // concurrent read + close on one handle. So stop_capture() waits for this to
   // clear before it closes the ADC. Atomic: set/read across tasks.
   std::atomic<bool> reading_{false};
+
+  // --- 2-channel wake-feed handle (MIC1|MIC2) -----------------------------
+  // A SECOND ES7210 device on the same shared I2S RX + I2C control, selecting
+  // MIC1|MIC2 and opened at channel=2. Used ONLY by the wake engine's feed
+  // loop so the mono record_pcm() path (STT/PTT) is untouched. Built lazily on
+  // the first start_capture2() (its ES7210 device handle needs the I2C ctrl,
+  // which init() builds). Guarded by its own mutex; the mono and 2ch handles
+  // are never open at once (wake pauses before the STT pipeline runs), so they
+  // don't contend for the RX beyond that ordering.
+  esp_codec_dev_handle_t codec_in2_ = nullptr;  // IN (ADC / MIC1|MIC2)
+  esp_codec_dev_sample_info_t fs_in2_ = {};
+  int capture2_users_ = 0;
+  volatile bool capturing2_ = false;
+  std::atomic<bool> reading2_{false};
+  SemaphoreHandle_t capture2_mutex_ = nullptr;
+
   double vol_pct_ = 50.0;
   uint32_t open_rate_ = 0;  // rate the codec is currently opened at
 
