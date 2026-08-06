@@ -125,6 +125,13 @@ class AudioDriver {
   virtual size_t record_pcm2(int16_t* /*out*/, size_t /*max_frames*/) {
     return 0;
   }
+  /// Analog mic preamp gain in dB, applied on the next capture open. Boards
+  /// without a settable PGA ignore it. Exposed because the right value is an
+  /// EMPIRICAL trade-off: too low and the wake detector gets nothing, too high
+  /// and the preamp compresses/colours the audio until a wake model scores it
+  /// the same as silence. Sweep it, listen, then pick.
+  virtual void set_mic_gain_db(float /*db*/) {}
+  virtual float mic_gain_db() const { return 0.0f; }
 
   // --- Diagnostic: per-input mic level probe --------------------------------
   //

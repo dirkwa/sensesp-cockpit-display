@@ -545,11 +545,15 @@ void WaveshareAudio::start_capture() {
       if (capture_mutex_) xSemaphoreGive(capture_mutex_);
       return;
     }
-    // Max the ES7210 analog PGA (37.5 dB). The onboard MEMS mics are quiet —
-    // at 30 dB speech peaked near the noise floor (~100 on a 32767 scale),
-    // which whisper tolerates but a wake detector will not. 37.5 dB is the
-    // driver's ceiling (get_db clamps >36 dB there).
-    esp_codec_dev_set_in_gain(codec_in_, 37.5);
+    // ES7210 analog PGA. Was pinned at the driver ceiling (37.5 dB) to fight a
+    // quiet mic, but a listening test showed the result is badly distorted —
+    // "like speaking through a long metal tube, barely any dynamic" — and that
+    // distortion is why openWakeWord scores this audio the same as silence
+    // (loud is not clean; the melspectrogram front-end needs fine structure).
+    // Runtime-settable so the gain can be swept and compared by ear/score
+    // without a reflash per value. get_db() quantises: 3 dB steps to 33, then
+    // 34.5 / 36 / 37.5.
+    esp_codec_dev_set_in_gain(codec_in_, mic_gain_db_);
     // The open reconfigures the shared RX slot for THIS handle's channel count
     // (see restore_rx_channel) and leaves the channel disabled. Put it back.
     restore_rx_channel();
