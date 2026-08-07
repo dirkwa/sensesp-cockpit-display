@@ -522,6 +522,15 @@ void WaveshareAudio::end_stream() {
     stream_stereo_ = nullptr;
     stream_stereo_frames_ = 0;
   }
+  // Restore the native capture clock. TX and RX share one I2S port here, so
+  // playing a 22050 Hz TTS reply also reclocks the MIC to 22050 Hz — while
+  // capture_rate() keeps reporting kSampleRate. Every later consumer then gets
+  // 22050 Hz samples labelled 16 kHz (pitch-shifted, time-compressed); WakeNet
+  // never matches the wake word again until a reboot.
+  if (open_rate_ != kSampleRate) {
+    apply_rate(kSampleRate);
+    restore_rx_channel();  // apply_rate() cycles tx_chan_, taking rx down too
+  }
   // Release the codec so chimes can play again. (begin_stream took it.)
   xSemaphoreGive(codec_mutex_);
 }
