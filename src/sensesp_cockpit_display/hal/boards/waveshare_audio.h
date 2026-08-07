@@ -52,6 +52,10 @@ class WaveshareAudio : public AudioDriver {
   void start_capture2() override;
   void stop_capture2() override;
   size_t record_pcm2(int16_t* out, size_t max_frames) override;
+  // Takes effect on the next capture open (stop_capture/start_capture cycle),
+  // so a caller sweeping values must reopen between them.
+  void set_mic_gain_db(float db) override { mic_gain_db_ = db; }
+  float mic_gain_db() const override { return mic_gain_db_; }
 
  private:
   static void audio_task(void* arg);
@@ -115,6 +119,13 @@ class WaveshareAudio : public AudioDriver {
   std::atomic<bool> reading2_{false};
   SemaphoreHandle_t capture2_mutex_ = nullptr;
 
+  // Analog PGA gain applied at capture open. Measured on hardware: the same
+  // spoken wake word scored 0.0004 at the driver's 37.5 dB ceiling and 0.3088
+  // at 18 dB — a ~770x improvement — because the maxed preamp compresses and
+  // colours the audio ("like a long metal tube, barely any dynamic") until the
+  // melspectrogram front-end sees it as noise. Loud is not clean. Runtime
+  // override via GET /mic_gain?db=N.
+  float mic_gain_db_ = 18.0f;
   double vol_pct_ = 50.0;
   uint32_t open_rate_ = 0;  // rate the codec is currently opened at
 
