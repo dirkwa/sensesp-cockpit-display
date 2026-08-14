@@ -665,7 +665,11 @@ void WaveshareAudio::start_capture2() {
       xSemaphoreGive(capture2_mutex_);
       return;
     }
-    esp_codec_dev_set_in_gain(codec_in2_, 37.5);  // match the mono path's PGA
+    // Same PGA as the mono path. Hardcoding the ceiling here made /mic_gain a
+    // half-truth: the endpoint set mic_gain_db_ and reported it back, but the
+    // on-device wake engine feeds off THIS handle, so the detector kept the
+    // 37.5 dB the mono path was moved off — the gain measured 770x worse.
+    esp_codec_dev_set_in_gain(codec_in2_, mic_gain_db_);
     restore_rx_channel();  // reconfig on open leaves the shared RX disabled
     capturing2_ = true;
   }
@@ -716,7 +720,7 @@ namespace {
 // touch the normal mono capture path.
 bool probe_pair(const audio_codec_ctrl_if_t* ctrl,
                 const audio_codec_data_if_t* data_if, uint8_t sel, int idx_a,
-                int idx_b, AudioDriver::MicLevels& out) {
+                int idx_b, float gain_db, AudioDriver::MicLevels& out) {
   es7210_codec_cfg_t cfg = {};
   cfg.ctrl_if = ctrl;
   cfg.mic_selected = sel;
@@ -736,7 +740,9 @@ bool probe_pair(const audio_codec_ctrl_if_t* ctrl,
   fs.bits_per_sample = 16;
   bool ok = false;
   if (esp_codec_dev_open(dev, &fs) == ESP_OK) {
-    esp_codec_dev_set_in_gain(dev, 37.5);
+    // Probe at the live PGA so /mic_probe reports what the capture paths
+    // actually hear, not a fixed-gain reading of its own.
+    esp_codec_dev_set_in_gain(dev, gain_db);
     // ~0.5 s of 2-channel frames, read in ~32 ms chunks.
     constexpr int kFrames = 256;  // 512 int16 (L/R) per read
     int16_t buf[kFrames * 2];
@@ -784,9 +790,9 @@ bool WaveshareAudio::probe_mic_channels(MicLevels& out) {
     // MIC1|MIC2 first, then MIC3|MIC4 — each pair stays in standard I2S (2
     // slots); 3+ inputs would force TDM and a different RX slot layout.
     bool p12 = probe_pair(ctrl, data_if_, ES7210_SEL_MIC1 | ES7210_SEL_MIC2, 0,
-                          1, out);
+                          1, mic_gain_db_, out);
     bool p34 = probe_pair(ctrl, data_if_, ES7210_SEL_MIC3 | ES7210_SEL_MIC4, 2,
-                          3, out);
+                          3, mic_gain_db_, out);
     ok = p12 || p34;
   }
   // probe_pair() opened and closed its own devices on the shared RX, which
