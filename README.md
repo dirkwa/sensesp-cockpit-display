@@ -62,4 +62,21 @@ This library doesn't ship its own build target — it's compiled by whatever PIO
 
 ## License
 
-MIT.
+sensesp-cockpit-display 1.0.0 and later is **source available, not open source**.
+See [LICENSE.md](LICENSE.md).
+
+**You may**, free of charge: run it on your own boat or fleet, private or
+commercial; use it for internal company operations; modify it for your own use;
+use it in education and research; and provide professional services around it.
+
+**You may not**: redistribute it, or publish a modified version of it to the
+PlatformIO registry, the Arduino library index or anywhere else. Verbatim
+copies of official releases may be mirrored and cached.
+
+Before 1.0.0 this library declared MIT (never tagged or released); that state
+remains available under MIT, see
+[LICENSE-MIT-through-v0.x.txt](LICENSE-MIT-through-v0.x.txt).
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).
